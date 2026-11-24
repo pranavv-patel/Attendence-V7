@@ -1,0 +1,9 @@
+{
+  "name": "smartqr-attendance-v7-verified",
+  "version": "7.1.0",
+  "description": "SmartQR Enterprise Attendance System v7.1 - Verified Production Release",
+  "private": true,
+  "dependencies": {
+    "nodemailer": "^6.9.15"
+  }
+}
