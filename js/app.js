@@ -487,10 +487,7 @@ async function emailFacultyClassReport() {
   const lines = FAC_DATA.dash_roster.map(r => `${r.enrollment_no || r.roll_no} | ${r.full_name}: ${r.attended}/${r.total_lectures} (${r.percentage}%)`);
   const res = await api('email_attendance_self', {
     subject: `Attendance Summary: ${title}`,
-    text: `${title}
-
-${lines.join('
-')}`
+    text: `${title}\n\n${lines.join('\n')}`
   });
   if (!res.ok) return toast(res.error, true);
   toast('Report emailed to your inbox!');
@@ -727,8 +724,7 @@ function loadCsvFileToTextarea(e, targetId) {
 }
 
 function parseCsvLines(text) {
-  return text.split(/?
-/).map(l => l.trim()).filter(l => l && !l.toLowerCase().startsWith('role,') && !l.toLowerCase().startsWith('class_code,'));
+  return text.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.toLowerCase().startsWith('role,') && !l.toLowerCase().startsWith('class_code,'));
 }
 
 async function submitBulkUsers() {
@@ -1018,8 +1014,7 @@ async function exportAdminFullBackup() {
 }
 
 function downloadCsv(filename, rows) {
-  const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('
-');
+  const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
