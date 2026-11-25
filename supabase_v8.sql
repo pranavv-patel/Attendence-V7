@@ -615,10 +615,18 @@ GRANT EXECUTE ON FUNCTION rpc_submit_qr_v8(UUID, UUID, TEXT, TEXT, DOUBLE PRECIS
 REVOKE ALL ON FUNCTION rpc_update_settings_v8(JSONB) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION rpc_update_settings_v8(JSONB) TO postgres, service_role;
 
--- Backfill faculty codes if missing
-UPDATE users
-SET faculty_code = 'FAC-' || LPAD(ROW_NUMBER() OVER (ORDER BY created_at, id)::TEXT, 3, '0')
-WHERE role = 'faculty' AND (faculty_code IS NULL OR faculty_code = '');
+-- Backfill faculty codes if missing (CTE fix for PostgreSQL)
+WITH numbered_faculty AS (
+  SELECT
+    id,
+    'FAC-' || LPAD(ROW_NUMBER() OVER (ORDER BY created_at, id)::TEXT, 3, '0') AS new_code
+  FROM users
+  WHERE role = 'faculty' AND (faculty_code IS NULL OR faculty_code = '')
+)
+UPDATE users u
+SET faculty_code = nf.new_code
+FROM numbered_faculty nf
+WHERE u.id = nf.id;
 
 -- Default Super Admin (pranavpatel.pps@gmail.com / PPS@2004)
 DO $$

@@ -1,816 +1,1017 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SmartQR Attendance v8.0</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = { darkMode: 'class' };
-  </script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <style>
-    * { box-sizing: border-box; }
-    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
-    .scan-line {
-      position: absolute; left: 10%; right: 10%; height: 2px;
-      background: linear-gradient(90deg, transparent, #38bdf8, transparent);
-      box-shadow: 0 0 12px #38bdf8;
-      animation: scanMove 2.2s ease-in-out infinite;
-    }
-    @keyframes scanMove {
-      0%, 100% { top: 14%; }
-      50% { top: 84%; }
-    }
-    .hide-scrollbar::-webkit-scrollbar { display: none; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartQR Attendance v8.2</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0f172a; --bg-2: #1e293b; --bg-3: #0b1120;
+    --border: rgba(148,163,184,0.16); --border-2: rgba(148,163,184,0.08);
+    --text: #e2e8f0; --text-dim: #94a3b8; --text-mute: #64748b;
+    --accent: #38bdf8; --accent-2: #2563eb;
+    --green: #22c55e; --amber: #f59e0b; --red: #ef4444; --purple: #a855f7;
+    --card-glass: rgba(30,41,59,0.86); --topbar-bg: rgba(15,23,42,0.92);
+  }
+  html.light {
+    --bg: #f1f5f9; --bg-2: #ffffff; --bg-3: #f8fafc;
+    --border: rgba(15,23,42,0.12); --border-2: rgba(15,23,42,0.06);
+    --text: #0f172a; --text-dim: #475569; --text-mute: #64748b;
+    --accent: #0284c7; --accent-2: #2563eb;
+    --card-glass: rgba(255,255,255,0.94); --topbar-bg: rgba(255,255,255,0.92);
+  }
+  html, body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+    transition: background 0.2s, color 0.2s;
+  }
+  body { display: flex; flex-direction: column; }
+  .hidden { display: none !important; }
+  .screen { display: none; flex: 1; flex-direction: column; }
+  .screen.active { display: flex; }
+
+  .toast {
+    position: fixed; bottom: 24px; right: 24px; z-index: 9998;
+    background: var(--bg-2); border: 1px solid var(--border); border-left: 4px solid var(--green);
+    color: var(--text); padding: 13px 18px; border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.45); font-size: 0.84rem; font-weight: 600;
+    transform: translateX(420px); transition: transform 0.3s ease; max-width: 360px;
+  }
+  .toast.show { transform: translateX(0); }
+  .toast.error { border-left-color: var(--red); }
+
+  .login-wrap {
+    flex: 1; display: flex; align-items: center; justify-content: center; padding: 36px 20px;
+    background: linear-gradient(135deg, var(--bg) 0%, var(--bg-2) 100%);
+    position: relative; overflow: hidden;
+  }
+  .login-wrap::before, .login-wrap::after {
+    content: ""; position: absolute; border-radius: 50%; filter: blur(120px); opacity: 0.22; pointer-events: none;
+  }
+  .login-wrap::before { width: 460px; height: 460px; background: #38bdf8; top: -140px; left: -140px; }
+  .login-wrap::after { width: 420px; height: 420px; background: #2563eb; bottom: -140px; right: -140px; }
+  .login-card {
+    position: relative; z-index: 1; width: 100%; max-width: 420px;
+    background: var(--card-glass); border: 1px solid var(--border); border-radius: 20px;
+    padding: 36px 32px; box-shadow: 0 25px 60px rgba(0,0,0,0.45); backdrop-filter: blur(14px);
+  }
+  .brand { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-bottom: 24px; text-align: center; }
+  .logo-big {
+    width: 56px; height: 56px; border-radius: 14px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex; align-items: center; justify-content: center; font-weight: 800; color: #fff; font-size: 1.2rem;
+    box-shadow: 0 8px 24px rgba(37,99,235,0.45); overflow: hidden;
+  }
+  .logo-big img { width: 100%; height: 100%; object-fit: cover; }
+  .brand h1 { font-size: 1.35rem; font-weight: 700; }
+  .brand h1 span { color: var(--accent); }
+  .brand p { font-size: 0.8rem; color: var(--text-dim); }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--accent); font-weight: 700; margin-bottom: 5px;
+  }
+  .input-box {
+    width: 100%; padding: 10px 13px; font-size: 0.85rem; font-family: inherit;
+    color: var(--text); background: var(--bg-3); border: 1px solid var(--border);
+    border-radius: 10px; outline: none; transition: border-color 0.2s;
+  }
+  .input-box:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(56,189,248,0.15); }
+  .pass-wrap { position: relative; }
+  .pass-wrap input { padding-right: 54px; }
+  .pass-toggle {
+    position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: var(--text-mute); font-size: 0.7rem; font-weight: 700; cursor: pointer;
+  }
+  .btn {
+    padding: 9px 14px; border-radius: 9px; border: none; font-size: 0.8rem; font-weight: 600;
+    font-family: inherit; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    gap: 6px; transition: all 0.18s; white-space: nowrap;
+  }
+  .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff;
+    box-shadow: 0 4px 14px rgba(37,99,235,0.3);
+  }
+  .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 7px 20px rgba(37,99,235,0.45); }
+  .btn-ghost { background: var(--bg-3); border: 1px solid var(--border); color: var(--text-dim); }
+  .btn-ghost:hover { color: var(--text); border-color: var(--accent); }
+  .btn-green { background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; }
+  .btn-amber { background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.35); }
+  .btn-danger { background: rgba(239,68,68,0.14); color: #f87171; border: 1px solid rgba(239,68,68,0.35); }
+  .btn-full { width: 100%; padding: 12px; }
+
+  .app-shell { display: flex; flex: 1; min-height: 100vh; }
+  .sidebar {
+    width: 252px; background: var(--bg-3); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; padding: 20px 14px;
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 100; overflow-y: auto;
+    transition: transform 0.25s ease;
+  }
+  .sidebar-brand {
+    display: flex; align-items: center; gap: 10px; padding: 4px 8px 18px;
+    border-bottom: 1px solid var(--border-2); margin-bottom: 14px;
+  }
+  .sidebar-logo {
+    width: 36px; height: 36px; border-radius: 10px; overflow: hidden;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; flex-shrink: 0;
+  }
+  .sidebar-logo img { width: 100%; height: 100%; object-fit: cover; }
+  .sidebar-brand h2 { font-size: 0.94rem; font-weight: 700; line-height: 1.2; }
+  .sidebar-brand h2 span { color: var(--accent); }
+  .sidebar-brand small { font-size: 0.65rem; color: var(--text-mute); text-transform: uppercase; letter-spacing: 0.8px; }
+  .nav-label { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-mute); font-weight: 700; padding: 12px 10px 6px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px;
+    color: var(--text-dim); font-size: 0.82rem; font-weight: 600; cursor: pointer; margin-bottom: 2px;
+    border: none; background: transparent; width: 100%; text-align: left; font-family: inherit;
+  }
+  .nav-item:hover { background: rgba(56,189,248,0.08); color: var(--text); }
+  .nav-item.active {
+    background: linear-gradient(135deg, rgba(56,189,248,0.16), rgba(37,99,235,0.16));
+    color: var(--accent); box-shadow: inset 0 0 0 1px rgba(56,189,248,0.25);
+  }
+  .nav-badge { margin-left: auto; font-size: 0.62rem; background: var(--red); color: #fff; padding: 2px 7px; border-radius: 999px; font-weight: 700; }
+  .sidebar-footer { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border-2); display: flex; flex-direction: column; gap: 8px; }
+  .user-chip {
+    display: flex; align-items: center; gap: 10px; padding: 9px; border-radius: 10px;
+    background: rgba(56,189,248,0.06); border: 1px solid var(--border-2);
+  }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 8px;
+    background: linear-gradient(135deg, var(--purple), var(--accent-2));
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.78rem; color: #fff; flex-shrink: 0;
+  }
+  .main { flex: 1; margin-left: 252px; display: flex; flex-direction: column; min-height: 100vh; }
+  .topbar {
+    display: flex; align-items: center; gap: 12px; padding: 14px 24px;
+    background: var(--topbar-bg); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 50;
+  }
+  .menu-toggle { display: none; background: var(--bg-3); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 8px; cursor: pointer; font-weight: 700; }
+  .page-title { font-size: 1.1rem; font-weight: 700; }
+  .page-title span { color: var(--accent); }
+  .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .content { padding: 24px; flex: 1; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 22px; }
+  .stat-card {
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: 14px;
+    padding: 18px 20px; position: relative; overflow: hidden;
+  }
+  .stat-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--accent); }
+  .stat-card.green::before { background: var(--green); }
+  .stat-card.amber::before { background: var(--amber); }
+  .stat-card.red::before { background: var(--red); }
+  .stat-value { font-size: 1.85rem; font-weight: 800; line-height: 1.1; margin-bottom: 4px; }
+  .stat-label { font-size: 0.76rem; color: var(--text-dim); font-weight: 600; }
+  .chart-row { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 22px; }
+  .panel { background: var(--bg-2); border: 1px solid var(--border); border-radius: 14px; padding: 20px; margin-bottom: 18px; }
+  .panel-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  .panel-head h3 { font-size: 0.96rem; font-weight: 700; }
+  .panel-head small { font-size: 0.74rem; color: var(--text-mute); display: block; }
+  .bar-chart { display: flex; align-items: flex-end; gap: 12px; height: 170px; padding-top: 12px; }
+  .bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; }
+  .bar { width: 100%; max-width: 38px; border-radius: 6px 6px 0 0; background: linear-gradient(180deg, var(--accent), var(--accent-2)); min-height: 6px; position: relative; }
+  .bar.green { background: linear-gradient(180deg, #22c55e, #15803d); }
+  .bar.amber { background: linear-gradient(180deg, #f59e0b, #b45309); }
+  .bar-label { font-size: 0.66rem; color: var(--text-mute); font-weight: 600; text-align: center; }
+  .donut-wrap { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .donut { position: relative; width: 140px; height: 140px; }
+  .donut svg { transform: rotate(-90deg); }
+  .donut-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .donut-center strong { font-size: 1.45rem; }
+  .donut-center small { font-size: 0.68rem; color: var(--text-mute); }
+  .legend { width: 100%; display: flex; flex-direction: column; gap: 6px; font-size: 0.78rem; }
+  .legend-item { display: flex; align-items: center; gap: 8px; color: var(--text-dim); }
+  .legend-item b { margin-left: auto; color: var(--text); }
+  .legend-dot { width: 9px; height: 9px; border-radius: 3px; }
+
+  .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .grid-6 { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+  .table-wrap { background: var(--bg-2); border: 1px solid var(--border); border-radius: 14px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  thead { background: rgba(56,189,248,0.06); border-bottom: 1px solid var(--border); }
+  th { text-align: left; padding: 12px 14px; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.8px; color: var(--accent); font-weight: 700; white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid var(--border-2); }
+  tbody tr:last-child { border-bottom: none; }
+  td { padding: 11px 14px; font-size: 0.82rem; color: var(--text-dim); }
+  td strong { color: var(--text); }
+  .mono { font-family: 'Courier New', monospace; font-weight: 700; }
+  .pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; font-size: 0.68rem; font-weight: 700; }
+  .pill.green { background: rgba(34,197,94,0.14); color: #22c55e; }
+  .pill.amber { background: rgba(245,158,11,0.14); color: #f59e0b; }
+  .pill.red { background: rgba(239,68,68,0.14); color: #ef4444; }
+  .pill.blue { background: rgba(56,189,248,0.14); color: var(--accent); }
+  .pill.purple { background: rgba(168,85,247,0.14); color: #a855f7; }
+
+  .session-grid { display: grid; grid-template-columns: 330px 1fr; gap: 18px; margin-bottom: 18px; }
+  .qr-card { background: var(--bg-2); border: 1px solid var(--border); border-radius: 14px; padding: 20px; text-align: center; }
+  .qr-canvas { background: #fff; border-radius: 12px; padding: 12px; margin: 12px auto; width: 220px; height: 220px; display: flex; align-items: center; justify-content: center; }
+  .roll-box {
+    min-height: 150px; max-height: 240px; overflow-y: auto; padding: 12px;
+    border-radius: 10px; background: var(--bg-3); border: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .hc-box { margin-top: 14px; padding: 12px; border-radius: 10px; background: var(--bg-3); border: 1px solid var(--border); }
+
+  .student-shell { display: flex; flex-direction: column; flex: 1; min-height: 100vh; }
+  .student-main { flex: 1; padding: 20px 16px 88px; max-width: 520px; width: 100%; margin: 0 auto; }
+  .camera-box {
+    position: relative; aspect-ratio: 1; width: 100%; max-width: 380px; margin: 14px auto;
+    background: #020617; border: 1px solid var(--border); border-radius: 18px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .camera-box video { width: 100%; height: 100%; object-fit: cover; }
+  .scan-line {
+    position: absolute; left: 10%; right: 10%; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    box-shadow: 0 0 12px var(--accent); animation: scanLine 2.2s ease-in-out infinite;
+  }
+  @keyframes scanLine { 0%,100% { top: 15%; } 50% { top: 85%; } }
+  .bottom-nav {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 60;
+    background: var(--topbar-bg); backdrop-filter: blur(12px); border-top: 1px solid var(--border);
+    display: grid; grid-template-columns: repeat(3, 1fr); max-width: 520px; margin: 0 auto;
+  }
+  .bottom-nav button {
+    padding: 13px 6px; border: none; background: transparent; color: var(--text-mute);
+    font-size: 0.74rem; font-weight: 700; cursor: pointer; border-top: 2px solid transparent; font-family: inherit;
+  }
+  .bottom-nav button.active { color: var(--accent); border-top-color: var(--accent); }
+
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(2,6,23,0.8); backdrop-filter: blur(5px);
+    display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 18px;
+  }
+  .modal-card {
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: 16px;
+    padding: 24px; width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto;
+  }
+  .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .modal-head h3 { font-size: 1rem; font-weight: 700; }
+  .perm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 10px; border-radius: 10px; background: var(--bg-3); border: 1px solid var(--border); font-size: 0.76rem; margin-bottom: 14px; }
+  .perm-grid label { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text); }
+
+  @media print {
+    body * { visibility: hidden; }
+    #print-export-area, #print-export-area * { visibility: visible; }
+    #print-export-area { position: absolute; left: 0; top: 0; width: 100%; background: #fff; color: #000; padding: 16px; }
+  }
+  @media (max-width: 1024px) {
+    .chart-row, .session-grid, .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+    .grid-6 { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 860px) {
+    .sidebar { transform: translateX(-100%); }
+    .sidebar.open { transform: translateX(0); box-shadow: 10px 0 40px rgba(0,0,0,0.5); }
+    .main { margin-left: 0; }
+    .menu-toggle { display: inline-flex; }
+  }
+</style>
 </head>
-<body class="min-h-screen flex flex-col bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100 transition-colors duration-200">
+<body>
 
-  <!-- TOAST -->
-  <div id="toast" class="fixed bottom-5 right-5 z-50 hidden max-w-sm rounded-xl px-4 py-3 text-xs sm:text-sm font-semibold text-white shadow-2xl bg-slate-900 dark:bg-sky-600"></div>
+<div class="toast" id="toast"></div>
 
-  <!-- GLOBAL TOP HEADER -->
-  <header class="sticky top-0 z-40 border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur">
-    <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-3">
-      <div class="flex items-center gap-3 min-w-0">
-        <img id="brand-logo" src="assets/logo.png" onerror="this.style.display='none'; document.getElementById('brand-badge').classList.remove('hidden');" alt="Logo" class="h-10 w-10 rounded-xl object-contain bg-sky-50 dark:bg-sky-950/60 p-1 border border-sky-200 dark:border-sky-800 shrink-0">
-        <div id="brand-badge" class="hidden h-10 w-10 rounded-xl bg-gradient-to-br from-sky-400 to-blue-600 text-white flex items-center justify-center font-extrabold text-sm shadow shrink-0">QR</div>
-        <div class="min-w-0">
-          <div id="brand-title" class="font-extrabold text-sm sm:text-base truncate">SmartQR Attendance</div>
-          <div id="brand-college" class="text-[11px] text-slate-500 dark:text-slate-400 truncate">University Portal v8.0</div>
-        </div>
+<!-- ==================== 1. LOGIN SCREEN ==================== -->
+<section class="screen active" id="screen-login">
+  <div class="login-wrap">
+    <div style="position:absolute;top:16px;right:16px;z-index:5;">
+      <button type="button" class="btn btn-ghost" onclick="toggleTheme()" id="login-theme-btn">☀️ Light</button>
+    </div>
+    <div class="login-card">
+      <div class="brand">
+        <div class="logo-big"><img src="assets/logo.png" onerror="this.style.display='none';this.parentElement.textContent='QR';" alt="QR"></div>
+        <h1 id="brand-title-login">SmartQR <span>Attendance</span></h1>
+        <p id="brand-college-login">Sign in to continue to your dashboard</p>
       </div>
-
-      <div class="flex items-center gap-2 shrink-0">
-        <button type="button" onclick="toggleTheme()" id="btn-theme" class="px-2.5 py-1.5 rounded-lg text-xs font-bold border border-slate-200 dark:border-slate-700 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700">☀️ Light</button>
-        <div id="nav-user-chip" class="hidden items-center gap-2">
-          <div class="hidden sm:block text-right">
-            <div id="nav-user-name" class="text-xs font-bold leading-tight"></div>
-            <div id="nav-user-role" class="text-[10px] font-extrabold uppercase tracking-wider text-sky-600 dark:text-sky-400"></div>
+      <form id="login-form" onsubmit="handleLogin(event)">
+        <div class="field">
+          <label>ID / Enrollment No / Roll No / Email</label>
+          <input id="login-id" type="text" required autocomplete="username" placeholder="e.g. FAC-001, 240303105001, or admin@college.edu" class="input-box">
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <div class="pass-wrap">
+            <input id="login-pass" type="password" required autocomplete="current-password" placeholder="Enter your password" class="input-box">
+            <button type="button" class="pass-toggle" onclick="togglePass('login-pass', this)">SHOW</button>
           </div>
-          <button type="button" onclick="logoutUser()" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 dark:bg-rose-950/60 dark:text-rose-300">Logout</button>
+        </div>
+        <button type="submit" id="login-btn" class="btn btn-primary btn-full">Sign In Securely</button>
+      </form>
+      <div id="device-mismatch-box" class="hidden" style="margin-top:16px;padding:12px;border-radius:10px;border:1px solid rgba(245,158,11,0.4);background:rgba(245,158,11,0.08);">
+        <div style="font-size:0.78rem;font-weight:700;color:var(--amber);margin-bottom:6px;">Unrecognized Device Detected</div>
+        <p id="device-mismatch-msg" style="font-size:0.75rem;color:var(--text-dim);margin-bottom:8px;"></p>
+        <input id="login-dev-reason" type="text" placeholder="Reason (e.g., New phone)" class="input-box" style="margin-bottom:8px;">
+        <button type="button" onclick="submitDeviceRequestFromLogin()" class="btn btn-amber btn-full">Submit Device Change Request</button>
+      </div>
+      <div style="margin-top:16px;text-align:center;font-size:0.72rem;color:var(--text-mute);">
+        Device ID: <code id="login-fp-code" class="mono">...</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 2. STUDENT SCREEN (Strictly 3 Options) ==================== -->
+<section class="screen" id="screen-student">
+  <div class="student-shell">
+    <header class="topbar">
+      <div class="sidebar-logo"><img src="assets/logo.png" onerror="this.style.display='none';this.parentElement.textContent='QR';" alt="QR"></div>
+      <div>
+        <div style="font-weight:700;font-size:0.95rem;" id="stu-name">Student</div>
+        <div style="font-size:0.72rem;color:var(--text-mute);" id="stu-meta">--</div>
+      </div>
+      <div class="topbar-right">
+        <button type="button" class="btn btn-ghost" onclick="toggleTheme()" data-theme-btn>☀️ Light</button>
+        <button type="button" class="btn btn-danger" onclick="logoutUser()">Logout</button>
+      </div>
+    </header>
+
+    <main class="student-main">
+      <div id="stu-tab-scan">
+        <div class="panel" style="text-align:center;">
+          <h3 style="margin-bottom:4px;">Mark Attendance</h3>
+          <p style="font-size:0.78rem;color:var(--text-dim);margin-bottom:10px;">Tap Open Camera and scan the live classroom QR.</p>
+          <div class="camera-box">
+            <video id="stu-video" playsinline muted class="hidden"></video>
+            <canvas id="stu-canvas" class="hidden"></canvas>
+            <div id="stu-cam-idle" style="padding:20px;color:var(--text-dim);font-size:0.82rem;">Camera is off</div>
+            <div id="stu-scan-overlay" class="hidden" style="position:absolute;inset:0;pointer-events:none;">
+              <div class="scan-line"></div>
+            </div>
+          </div>
+          <button type="button" id="btn-stu-cam" onclick="toggleStudentCamera()" class="btn btn-primary btn-full">Open Camera</button>
+          <p id="stu-scan-status" style="margin-top:10px;font-size:0.78rem;color:var(--text-dim);">Ready to scan</p>
         </div>
       </div>
+
+      <div id="stu-tab-password" class="hidden">
+        <div class="panel">
+          <h3 style="margin-bottom:4px;">Change Password</h3>
+          <p style="font-size:0.76rem;color:var(--text-dim);margin-bottom:14px;">Enter current password and new password twice.</p>
+          <div class="field">
+            <label>Current Password</label>
+            <div class="pass-wrap">
+              <input id="stu-cp-old" type="password" class="input-box">
+              <button type="button" class="pass-toggle" onclick="togglePass('stu-cp-old', this)">SHOW</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>New Password (1st Entry)</label>
+            <div class="pass-wrap">
+              <input id="stu-cp-new1" type="password" oninput="validateStudentPasswordMatch()" class="input-box">
+              <button type="button" class="pass-toggle" onclick="togglePass('stu-cp-new1', this)">SHOW</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Confirm New Password (2nd Entry)</label>
+            <div class="pass-wrap">
+              <input id="stu-cp-new2" type="password" oninput="validateStudentPasswordMatch()" class="input-box">
+              <button type="button" class="pass-toggle" onclick="togglePass('stu-cp-new2', this)">SHOW</button>
+            </div>
+            <div id="stu-cp-match-hint" style="font-size:0.72rem;margin-top:6px;font-weight:600;"></div>
+          </div>
+          <button type="button" onclick="submitStudentPassword()" class="btn btn-primary btn-full">Update Password</button>
+        </div>
+      </div>
+
+      <div id="stu-tab-device" class="hidden">
+        <div class="panel">
+          <h3 style="margin-bottom:4px;">Device Change Request</h3>
+          <p style="font-size:0.76rem;color:var(--text-dim);margin-bottom:14px;">Submit a request if you switched phones or browsers.</p>
+          <div style="padding:10px 12px;border-radius:10px;background:var(--bg-3);border:1px solid var(--border);margin-bottom:14px;">
+            <div style="font-size:0.66rem;text-transform:uppercase;color:var(--text-mute);font-weight:700;">Current Browser Device ID</div>
+            <code id="stu-tab-fp" class="mono" style="color:var(--accent);font-size:0.84rem;">...</code>
+          </div>
+          <div class="field">
+            <label>Reason</label>
+            <input id="stu-dev-reason" type="text" placeholder="e.g., Bought new phone" class="input-box">
+          </div>
+          <button type="button" onclick="submitStudentDeviceRequest()" class="btn btn-amber btn-full">Raise Device Change Request</button>
+        </div>
+      </div>
+    </main>
+
+    <nav class="bottom-nav">
+      <button type="button" data-stu-tab="scan" onclick="switchStudentTab('scan')" class="active">1. Scan QR</button>
+      <button type="button" data-stu-tab="password" onclick="switchStudentTab('password')">2. Password</button>
+      <button type="button" data-stu-tab="device" onclick="switchStudentTab('device')">3. Device Req</button>
+    </nav>
+  </div>
+</section>
+
+<!-- ==================== 3. CR SCREEN (Today Only) ==================== -->
+<section class="screen" id="screen-cr">
+  <header class="topbar">
+    <div class="sidebar-logo"><img src="assets/logo.png" onerror="this.style.display='none';this.parentElement.textContent='QR';" alt="QR"></div>
+    <div>
+      <div style="font-weight:700;font-size:0.98rem;" id="cr-heading">CR Portal</div>
+      <div style="font-size:0.72rem;color:var(--text-mute);" id="cr-sub">Today's lectures only (Start -10m to End +1h)</div>
+    </div>
+    <div class="topbar-right">
+      <button type="button" class="btn btn-ghost" onclick="loadCRTodayLectures(true)">↻ Refresh</button>
+      <button type="button" class="btn btn-ghost" onclick="openChangePassModal()">Password</button>
+      <button type="button" class="btn btn-ghost" onclick="toggleTheme()" data-theme-btn>☀️ Light</button>
+      <button type="button" class="btn btn-danger" onclick="logoutUser()">Logout</button>
     </div>
   </header>
 
-  <!-- 1. LOGIN SCREEN -->
-  <section id="screen-login" class="flex-1 flex items-center justify-center p-4">
-    <div class="w-full max-w-md rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-7 shadow-2xl">
-      <div class="text-center mb-6">
-        <div class="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-br from-sky-400 to-blue-600 text-white flex items-center justify-center text-xl font-extrabold shadow-lg mb-3">QR</div>
-        <h1 class="text-2xl font-extrabold">QR <span class="text-sky-500">Attendance</span></h1>
-        <p id="login-subtitle" class="text-xs text-slate-500 dark:text-slate-400 mt-1">Sign in using ID, Enrollment No, Roll No, or Email</p>
-      </div>
-
-      <form id="login-form" onsubmit="handleLogin(event)" class="space-y-4">
-        <div>
-          <label class="block text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">ID / Enrollment No / Roll No / Email</label>
-          <input id="login-id" type="text" autocomplete="username" required placeholder="e.g. FAC-001, 240303105001, or admin@college.edu" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3.5 py-2.5 text-sm outline-none focus:ring-2 focus:ring-sky-500" />
-        </div>
-        <div>
-          <label class="block text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Password</label>
-          <div class="relative">
-            <input id="login-pass" type="password" autocomplete="current-password" required placeholder="••••••••" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3.5 py-2.5 pr-14 text-sm outline-none focus:ring-2 focus:ring-sky-500" />
-            <button type="button" onclick="togglePassVis('login-pass', this)" class="absolute right-3 top-2.5 text-[11px] font-bold text-slate-400 hover:text-sky-500">SHOW</button>
+  <div class="content" style="max-width:1100px;width:100%;margin:0 auto;">
+    <div id="cr-live-panel" class="hidden">
+      <div class="session-grid">
+        <div class="qr-card">
+          <div style="display:flex;justify-content:center;gap:8px;align-items:center;">
+            <span class="pill green">QR OPEN</span>
+            <span id="cr-live-code" class="mono" style="font-size:0.76rem;color:var(--accent);"></span>
+          </div>
+          <h3 id="cr-live-title" style="margin-top:8px;font-size:0.95rem;"></h3>
+          <div id="cr-qr-box" class="qr-canvas"></div>
+          <div id="cr-qr-clock" class="mono" style="color:var(--green);font-size:0.82rem;margin-bottom:10px;">--:--:-- IST</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <button type="button" onclick="openProjectorMode()" class="btn btn-ghost btn-full">Projector Fullscreen</button>
+            <button type="button" id="btn-cr-mark-self" onclick="crMarkSelfAttendance()" class="btn btn-green btn-full">Mark My Attendance</button>
+            <button type="button" onclick="closeActiveSession()" class="btn btn-danger btn-full">Close QR</button>
           </div>
         </div>
-        <button type="submit" id="login-btn" class="w-full py-3 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:opacity-95 text-white font-bold text-sm shadow-lg">Sign In Securely</button>
-      </form>
-
-      <div id="device-mismatch-box" class="hidden mt-4 p-4 rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 space-y-2">
-        <div class="text-xs font-extrabold text-amber-900 dark:text-amber-300">Unrecognized Device Detected</div>
-        <p id="device-mismatch-msg" class="text-xs text-amber-800 dark:text-amber-200"></p>
-        <input id="login-dev-reason" type="text" placeholder="Reason (e.g., Bought new phone)" class="w-full rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs" />
-        <button type="button" onclick="submitDeviceRequestFromLogin()" class="w-full py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs">Submit Device Change Request</button>
-      </div>
-
-      <div class="mt-4 text-center text-[11px] text-slate-400">
-        Device ID: <code id="login-fp-code" class="font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800">...</code>
+        <div class="panel" style="margin-bottom:0;display:flex;flex-direction:column;justify-content:space-between;">
+          <div>
+            <div class="panel-head" style="margin-bottom:10px;">
+              <div><h3>Scanned Roll Numbers (<span id="cr-scan-count" style="color:var(--green);">0</span>)</h3><small>Grouped by class · No manual roster for CR</small></div>
+              <button type="button" onclick="copySessionRolls()" class="btn btn-primary">Copy Rolls</button>
+            </div>
+            <div id="cr-roll-pills" class="roll-box"></div>
+          </div>
+          <div class="hc-box">
+            <div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;color:var(--text-dim);margin-bottom:8px;">Headcount Verification (Info Only)</div>
+            <div class="grid-3" style="align-items:end;">
+              <div>
+                <label style="font-size:0.68rem;color:var(--text-mute);font-weight:700;">Manual Headcount</label>
+                <input id="cr-headcount-input" type="number" min="0" placeholder="Count" class="input-box" style="margin-top:4px;">
+              </div>
+              <div style="padding:8px 10px;border-radius:8px;background:var(--bg-2);border:1px solid var(--border);">
+                <div style="font-size:0.66rem;color:var(--text-mute);font-weight:700;">QR Headcount</div>
+                <div id="cr-qr-headcount" class="mono" style="font-size:1.05rem;color:var(--accent);">0</div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:6px;">
+                <span id="cr-headcount-status" class="pill blue" style="justify-content:center;">Enter Count</span>
+                <button type="button" onclick="saveHeadcount('cr')" class="btn btn-primary">Save</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
-  </section>
 
-  <!-- 2. STUDENT SCREEN (Strictly 3 Options: 1. Scan QR, 2. Change Password x2, 3. Device Request) -->
-  <section id="screen-student" class="hidden flex-1 flex flex-col">
-    <main class="flex-1 max-w-md w-full mx-auto p-4 pb-24">
-      <!-- Option 1: Scan QR -->
-      <div id="stu-tab-scan" class="stu-tab space-y-4">
-        <div class="rounded-2xl bg-gradient-to-r from-sky-500 to-blue-600 p-5 text-white shadow-lg">
-          <div class="text-[11px] uppercase tracking-wider font-bold text-sky-100">Student Scanner</div>
-          <h2 id="stu-name" class="text-xl font-extrabold mt-0.5">Student Name</h2>
-          <p id="stu-meta" class="text-xs text-sky-100 mt-1">Enrollment: -- • Roll: -- • Class: --</p>
-        </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Today's Lectures</h3><small>Available from 10 min before start to 1 hour after end (IST)</small></div>
+      <div id="cr-lectures-list" class="grid-2"></div>
+    </div>
+  </div>
+</section>
 
-        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
-          <div class="flex items-center justify-between gap-2">
-            <h3 class="text-sm font-bold">Classroom QR Scanner</h3>
-            <button type="button" id="btn-stu-cam" onclick="toggleStudentCamera()" class="px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold">Open Camera</button>
-          </div>
-
-          <div class="relative aspect-square w-full rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 flex items-center justify-center">
-            <video id="stu-video" playsinline muted class="hidden w-full h-full object-cover"></video>
-            <canvas id="stu-canvas" class="hidden"></canvas>
-            <div id="stu-cam-idle" class="text-center p-6 text-slate-400">
-              <div class="text-sm font-bold text-slate-200">Camera Ready</div>
-              <p class="text-xs mt-1">Tap "Open Camera" and scan the live classroom QR.</p>
-            </div>
-            <div id="stu-scan-overlay" class="hidden absolute inset-0 pointer-events-none">
-              <div class="scan-line"></div>
-              <div class="absolute inset-8 border-2 border-sky-400/70 rounded-2xl"></div>
-            </div>
-          </div>
-
-          <p id="stu-scan-status" class="text-xs text-center text-slate-500 dark:text-slate-400">Tap "Open Camera" to start.</p>
-        </div>
-      </div>
-
-      <!-- Option 2: Change Password (Current + New Password entered 2 times) -->
-      <div id="stu-tab-password" class="stu-tab hidden space-y-4">
-        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
-          <div>
-            <h2 class="text-base font-extrabold">Change Password</h2>
-            <p class="text-xs text-slate-500 dark:text-slate-400">Enter your current password and enter your new password twice.</p>
-          </div>
-
-          <div>
-            <label class="block text-[11px] font-bold uppercase mb-1">Current Password</label>
-            <div class="relative">
-              <input id="stu-cp-old" type="password" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3.5 py-2.5 pr-14 text-xs" />
-              <button type="button" onclick="togglePassVis('stu-cp-old', this)" class="absolute right-3 top-2.5 text-[11px] font-bold text-slate-400">SHOW</button>
-            </div>
-          </div>
-
-          <div>
-            <label class="block text-[11px] font-bold uppercase mb-1">New Password (1st Entry)</label>
-            <div class="relative">
-              <input id="stu-cp-new1" type="password" oninput="validateStudentPasswordMatch()" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3.5 py-2.5 pr-14 text-xs" />
-              <button type="button" onclick="togglePassVis('stu-cp-new1', this)" class="absolute right-3 top-2.5 text-[11px] font-bold text-slate-400">SHOW</button>
-            </div>
-          </div>
-
-          <div>
-            <label class="block text-[11px] font-bold uppercase mb-1">Re-Enter New Password (2nd Entry)</label>
-            <div class="relative">
-              <input id="stu-cp-new2" type="password" oninput="validateStudentPasswordMatch()" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3.5 py-2.5 pr-14 text-xs" />
-              <button type="button" onclick="togglePassVis('stu-cp-new2', this)" class="absolute right-3 top-2.5 text-[11px] font-bold text-slate-400">SHOW</button>
-            </div>
-            <p id="stu-cp-match-hint" class="text-[11px] mt-1 font-semibold text-slate-400"></p>
-          </div>
-
-          <button type="button" onclick="submitStudentPassword()" class="w-full py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs">Update Password</button>
-        </div>
-      </div>
-
-      <!-- Option 3: Device Change Request -->
-      <div id="stu-tab-device" class="stu-tab hidden space-y-4">
-        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
-          <div>
-            <h2 class="text-base font-extrabold">Device Change Request</h2>
-            <p class="text-xs text-slate-500 dark:text-slate-400">Request an Admin reset if you changed your phone or browser.</p>
-          </div>
-
-          <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs">
-            <div class="text-[10px] uppercase font-bold text-slate-400">Current Browser Device ID</div>
-            <code id="stu-tab-fp" class="font-mono font-bold text-sky-600 dark:text-sky-400">...</code>
-          </div>
-
-          <div>
-            <label class="block text-[11px] font-bold uppercase mb-1">Reason for Device Change</label>
-            <input id="stu-dev-reason" type="text" placeholder="e.g., Bought new phone or cleared browser data" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3.5 py-2.5 text-xs" />
-          </div>
-
-          <button type="button" onclick="submitStudentDeviceRequest()" class="w-full py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs">Submit Device Request</button>
-        </div>
-      </div>
-    </main>
-
-    <!-- Student 3-Option Bottom Bar -->
-    <nav class="fixed bottom-0 inset-x-0 z-30 border-t border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur">
-      <div class="max-w-md mx-auto grid grid-cols-3">
-        <button type="button" data-stu-tab="scan" onclick="switchStudentTab('scan')" class="stu-nav-btn py-3 text-xs font-bold text-sky-600 dark:text-sky-400 border-t-2 border-sky-500">1. Scan QR</button>
-        <button type="button" data-stu-tab="password" onclick="switchStudentTab('password')" class="stu-nav-btn py-3 text-xs font-bold text-slate-500 dark:text-slate-400 border-t-2 border-transparent">2. Password</button>
-        <button type="button" data-stu-tab="device" onclick="switchStudentTab('device')" class="stu-nav-btn py-3 text-xs font-bold text-slate-500 dark:text-slate-400 border-t-2 border-transparent">3. Device Req</button>
-      </div>
-    </nav>
-  </section>
-
-  <!-- 3. CR (CLASS REPRESENTATIVE) SCREEN -->
-  <section id="screen-cr" class="hidden flex-1 flex flex-col">
-    <main class="flex-1 max-w-5xl w-full mx-auto p-4 space-y-5">
-      <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 flex flex-wrap items-center justify-between gap-3">
+<!-- ==================== 4. FACULTY SCREEN ==================== -->
+<section class="screen" id="screen-faculty">
+  <div class="app-shell">
+    <aside class="sidebar" id="fac-sidebar">
+      <div class="sidebar-brand">
+        <div class="sidebar-logo"><img src="assets/logo.png" onerror="this.style.display='none';this.parentElement.textContent='QR';" alt="QR"></div>
         <div>
-          <span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">CR Portal • Today Only</span>
-          <h2 id="cr-heading" class="text-lg font-extrabold mt-1">Class Representative</h2>
-          <p id="cr-sub" class="text-xs text-slate-500 dark:text-slate-400">Open QR for today's slots within period to +1 hour.</p>
-        </div>
-        <div class="flex gap-2">
-          <button type="button" onclick="loadCRTodayLectures(true)" class="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-bold">↻ Refresh Today</button>
-          <button type="button" onclick="openChangePassModal()" class="px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold">Password</button>
+          <h2>Faculty <span>Panel</span></h2>
+          <small id="fac-sidebar-meta">FAC</small>
         </div>
       </div>
-
-      <!-- CR Active QR + Scanned Roll Numbers + Headcount Verification + Mark My Attendance -->
-      <div id="cr-live-panel" class="hidden rounded-2xl border-2 border-sky-500 bg-white dark:bg-slate-900 p-5 space-y-4">
-        <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
-          <div>
-            <div class="flex items-center gap-2">
-              <span class="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 text-[11px] font-extrabold">QR OPEN</span>
-              <span id="cr-live-code" class="font-mono text-xs font-bold text-sky-600 dark:text-sky-400"></span>
-            </div>
-            <h3 id="cr-live-title" class="text-base font-extrabold mt-1"></h3>
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <button type="button" id="btn-cr-mark-self" onclick="crMarkSelfAttendance()" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow">Mark My Attendance</button>
-            <button type="button" onclick="closeActiveSession()" class="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold">Close QR</button>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-          <!-- Left: QR -->
-          <div class="flex flex-col items-center justify-center p-4 rounded-2xl bg-slate-950 text-white">
-            <div id="cr-qr-box" class="bg-white p-3 rounded-xl"></div>
-            <p id="cr-qr-clock" class="font-mono text-xs text-emerald-400 mt-3">--:--:-- IST</p>
-            <p class="text-[11px] text-slate-400 mt-1">Auto-rotates every 15s • No manual roster for CR</p>
-          </div>
-
-          <!-- Right: Scanned Roll Numbers + Manual Headcount Verification -->
-          <div class="flex flex-col justify-between p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 space-y-4">
-            <div>
-              <div class="flex items-center justify-between mb-2">
-                <span class="text-xs font-extrabold uppercase">Scanned Roll Numbers (<span id="cr-scan-count">0</span>)</span>
-                <button type="button" onclick="copySessionRolls()" class="px-2.5 py-1 rounded-lg bg-sky-500 text-white text-[11px] font-bold">Copy Rolls</button>
-              </div>
-              <div id="cr-roll-pills" class="min-h-[120px] max-h-[180px] overflow-y-auto flex flex-wrap content-start gap-1.5 p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"></div>
-            </div>
-
-            <!-- Headcount Box (Verification only) -->
-            <div class="p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 space-y-2">
-              <div class="text-[11px] font-extrabold uppercase text-slate-500 dark:text-slate-400">Headcount Verification (Info Only)</div>
-              <div class="grid grid-cols-2 gap-2 items-center">
-                <div>
-                  <label class="block text-[10px] font-bold uppercase text-slate-500">Manual Headcount</label>
-                  <input id="cr-headcount-input" type="number" min="0" placeholder="e.g. 42" class="w-full mt-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2.5 py-1.5 text-xs font-mono" />
-                </div>
-                <div class="p-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                  <div class="text-[10px] font-bold uppercase text-slate-500">QR Headcount</div>
-                  <div class="flex items-center justify-between mt-1">
-                    <span id="cr-qr-headcount" class="text-sm font-extrabold font-mono text-sky-600 dark:text-sky-400">0</span>
-                    <span id="cr-headcount-status" class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300">Pending</span>
-                  </div>
-                </div>
-              </div>
-              <button type="button" onclick="saveHeadcount('cr')" class="w-full py-1.5 rounded-lg bg-slate-900 dark:bg-sky-600 text-white text-xs font-bold">Save Headcount</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- CR Today's Timetable Slots -->
-      <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
-        <h3 class="text-sm font-extrabold mb-3">Today's Lectures (Period Window to +1 Hour)</h3>
-        <div id="cr-lectures-list" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs"></div>
-      </div>
-    </main>
-  </section>
-
-  <!-- 4. FACULTY SCREEN -->
-  <section id="screen-faculty" class="hidden flex-1 flex flex-col md:flex-row">
-    <aside id="fac-sidebar" class="w-full md:w-64 bg-slate-900 text-slate-300 border-r border-slate-800 p-4 flex flex-col shrink-0">
-      <div class="pb-4 mb-4 border-b border-slate-800">
-        <div class="text-white font-extrabold text-sm">Faculty <span class="text-sky-400">Panel</span></div>
-        <div id="fac-sidebar-meta" class="text-[11px] text-slate-400 mt-0.5"></div>
-      </div>
-      <nav class="flex md:flex-col gap-1 overflow-x-auto hide-scrollbar">
-        <button type="button" data-fac-tab="live" onclick="switchFacultyTab('live')" class="fac-nav-btn text-left px-3 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap bg-slate-800 text-white">Live QR & Roster</button>
-        <button type="button" data-fac-tab="classes" onclick="switchFacultyTab('classes')" class="fac-nav-btn text-left px-3 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap hover:bg-slate-800">My Classes & Merged</button>
-        <button type="button" data-fac-tab="matrix" onclick="switchFacultyTab('matrix')" class="fac-nav-btn text-left px-3 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap hover:bg-slate-800">Attendance History</button>
-      </nav>
-      <div class="mt-auto pt-4 border-t border-slate-800 hidden md:block">
-        <button type="button" onclick="openChangePassModal()" class="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200">Change Password</button>
+      <div class="nav-label">Teaching</div>
+      <button type="button" class="nav-item active" data-fac-tab="live" onclick="switchFacultyTab('live')">Live QR & Roster</button>
+      <button type="button" class="nav-item" data-fac-tab="classes" onclick="switchFacultyTab('classes')">My Classes & Merged</button>
+      <button type="button" class="nav-item" data-fac-tab="matrix" onclick="switchFacultyTab('matrix')">Past Lectures</button>
+      <div class="sidebar-footer">
+        <button type="button" class="btn btn-ghost btn-full" onclick="openChangePassModal()">Change Password</button>
+        <button type="button" class="btn btn-danger btn-full" onclick="logoutUser()">Logout</button>
       </div>
     </aside>
 
-    <main class="flex-1 p-4 sm:p-6 space-y-5">
-      <!-- Faculty Tab 1: Live QR + Scanned Roll Box + Manual Roster Below -->
-      <div id="fac-tab-live" class="fac-tab space-y-5">
-        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 flex flex-wrap items-end gap-3">
-          <div class="flex-1 min-w-[200px]">
-            <label class="block text-[10px] font-bold uppercase text-slate-500 mb-1">Primary Class</label>
-            <select id="fac-start-class" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-bold"></select>
+    <div class="main">
+      <header class="topbar">
+        <button type="button" class="menu-toggle" onclick="document.getElementById('fac-sidebar').classList.toggle('open')">☰</button>
+        <div class="page-title" id="fac-page-title">Live QR <span>& Roster</span></div>
+        <div class="topbar-right">
+          <button type="button" class="btn btn-ghost" onclick="toggleTheme()" data-theme-btn>☀️ Light</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <div class="page active" id="fac-tab-live">
+          <div class="panel">
+            <div class="grid-3" style="align-items:end;">
+              <div>
+                <label style="font-size:0.68rem;font-weight:700;color:var(--accent);text-transform:uppercase;">Primary Class</label>
+                <select id="fac-start-class" class="input-box" style="margin-top:5px;"></select>
+              </div>
+              <div>
+                <label style="font-size:0.68rem;font-weight:700;color:var(--accent);text-transform:uppercase;">Merged Classes (Optional 2+)</label>
+                <select id="fac-merge-classes" multiple size="2" class="input-box" style="margin-top:5px;"></select>
+              </div>
+              <div>
+                <label style="font-size:0.68rem;font-weight:700;color:var(--accent);text-transform:uppercase;">Subject</label>
+                <select id="fac-start-subject" class="input-box" style="margin-top:5px;"></select>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:12px;">
+              <button type="button" onclick="startFacultyLecture('REGULAR')" class="btn btn-primary">Start Regular QR</button>
+              <button type="button" onclick="startFacultyLecture('EXTRA')" class="btn btn-green">+ Extra Lecture</button>
+            </div>
           </div>
-          <div class="flex-1 min-w-[220px]">
-            <label class="block text-[10px] font-bold uppercase text-slate-500 mb-1">Merged Classes (Optional 2+ Classes)</label>
-            <select id="fac-merge-classes" multiple size="2" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2.5 py-1.5 text-xs"></select>
-          </div>
-          <div class="flex-1 min-w-[200px]">
-            <label class="block text-[10px] font-bold uppercase text-slate-500 mb-1">Subject</label>
-            <select id="fac-start-subject" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-bold"></select>
-          </div>
-          <div class="flex gap-2">
-            <button type="button" id="btn-fac-reg" onclick="startFacultyLecture('REGULAR')" class="px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold">Start QR</button>
-            <button type="button" id="btn-fac-extra" onclick="startFacultyLecture('EXTRA')" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold">+ Extra</button>
+
+          <div id="fac-live-panel" class="hidden">
+            <div class="session-grid">
+              <div class="qr-card">
+                <div style="display:flex;justify-content:center;gap:8px;align-items:center;">
+                  <span class="pill green" id="fac-live-pill">LIVE</span>
+                  <span id="fac-live-code" class="mono" style="font-size:0.76rem;color:var(--accent);"></span>
+                </div>
+                <h3 id="fac-live-title" style="margin-top:8px;font-size:0.95rem;"></h3>
+                <div id="fac-qr-box" class="qr-canvas"></div>
+                <div id="fac-qr-clock" class="mono" style="color:var(--green);font-size:0.82rem;margin-bottom:10px;">--:--:-- IST</div>
+                <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px;align-items:center;">
+                  <label style="font-size:0.78rem;font-weight:700;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input id="fac-geo-toggle" type="checkbox" onchange="toggleFacultyGeo()"> GPS
+                  </label>
+                  <button type="button" onclick="openProjectorMode()" class="btn btn-ghost">Projector</button>
+                  <button type="button" id="fac-pause-btn" onclick="togglePauseQr()" class="btn btn-amber">Pause QR</button>
+                  <button type="button" onclick="closeActiveSession()" class="btn btn-danger">End Session</button>
+                </div>
+              </div>
+
+              <div class="panel" style="margin-bottom:0;display:flex;flex-direction:column;justify-content:space-between;">
+                <div>
+                  <div class="panel-head" style="margin-bottom:10px;">
+                    <div><h3>Scanned Roll Numbers (<span id="fac-scan-count" style="color:var(--green);">0</span>)</h3><small>Class-wise grouped for merged lectures</small></div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                      <button type="button" onclick="copySessionRolls()" class="btn btn-primary">Copy Rolls</button>
+                      <button type="button" onclick="emailFacultySessionReport()" class="btn btn-green">Auto-Email</button>
+                      <button type="button" onclick="openGmailSelf()" class="btn btn-ghost">Gmail</button>
+                      <button type="button" onclick="openMailtoSelf()" class="btn btn-ghost">Mail App</button>
+                    </div>
+                  </div>
+                  <div id="fac-roll-pills" class="roll-box"></div>
+                </div>
+                <div class="hc-box">
+                  <div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;color:var(--text-dim);margin-bottom:8px;">Headcount Verification (Verification Only — No Effect on Attendance)</div>
+                  <div class="grid-3" style="align-items:end;">
+                    <div>
+                      <label style="font-size:0.68rem;color:var(--text-mute);font-weight:700;">Manual Headcount</label>
+                      <input id="fac-headcount-input" type="number" min="0" placeholder="Count" class="input-box" style="margin-top:4px;">
+                    </div>
+                    <div style="padding:8px 10px;border-radius:8px;background:var(--bg-2);border:1px solid var(--border);">
+                      <div style="font-size:0.66rem;color:var(--text-mute);font-weight:700;">QR Headcount</div>
+                      <div id="fac-qr-headcount" class="mono" style="font-size:1.05rem;color:var(--accent);">0</div>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:6px;">
+                      <span id="fac-headcount-status" class="pill blue" style="justify-content:center;">Enter Count</span>
+                      <button type="button" onclick="saveHeadcount('fac')" class="btn btn-primary">Save</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head">
+                <div><h3>Manual Attendance Roster (Below QR)</h3><small>Tick P or OD manually; synced live with scanned rolls above.</small></div>
+                <input id="fac-roster-search" oninput="renderLiveRoster()" type="text" placeholder="Search roll, enrollment, or name..." class="input-box" style="max-width:260px;">
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Roll / Enroll</th><th>Student Name</th><th>Class</th><th>Present (P)</th><th>OD</th><th>Status</th></tr></thead>
+                  <tbody id="fac-manual-tbody"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div id="fac-live-panel" class="hidden space-y-5">
-          <!-- Top Split: Left QR + Right Scanned Roll Numbers & Headcount -->
-          <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
-            <!-- Left: QR -->
-            <div class="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-950 text-white p-5 flex flex-col items-center justify-center text-center">
-              <div class="flex items-center gap-2 mb-2">
-                <span class="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-extrabold">LIVE SESSION</span>
-                <span id="fac-live-code" class="font-mono text-xs text-sky-300"></span>
-              </div>
-              <h3 id="fac-live-title" class="text-sm font-extrabold mb-3"></h3>
-              <div id="fac-qr-box" class="bg-white p-3 rounded-xl"></div>
-              <div id="fac-qr-clock" class="font-mono text-xs text-emerald-400 mt-3">--:--:-- IST</div>
-              <div class="flex flex-wrap items-center justify-center gap-2 mt-4">
-                <label id="fac-geo-label" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-bold cursor-pointer">
-                  <input id="fac-geo-toggle" type="checkbox" onchange="toggleFacultyGeo()" /> GPS
-                </label>
-                <button type="button" onclick="closeActiveSession()" class="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold">End Session</button>
-              </div>
+        <div class="page" id="fac-tab-classes">
+          <div class="panel-head"><h3>My Assigned & Merged Classes</h3><button type="button" onclick="loadFacultyClasses(true)" class="btn btn-ghost">↻ Refresh</button></div>
+          <div id="fac-classes-grid" class="grid-3"></div>
+        </div>
+
+        <div class="page" id="fac-tab-matrix">
+          <div class="panel-head"><h3>Past Lectures & Headcount Log</h3><button type="button" onclick="loadFacultyMatrix(true)" class="btn btn-ghost">↻ Refresh</button></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Session ID</th><th>Date</th><th>Classes</th><th>Subject</th><th>Marked</th><th>Manual HC</th><th>Action</th></tr></thead>
+              <tbody id="fac-history-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 5. ADMIN SCREEN ==================== -->
+<section class="screen" id="screen-admin">
+  <div class="app-shell">
+    <aside class="sidebar" id="adm-sidebar">
+      <div class="sidebar-brand">
+        <div class="sidebar-logo"><img src="assets/logo.png" onerror="this.style.display='none';this.parentElement.textContent='QR';" alt="QR"></div>
+        <div>
+          <h2>QR <span>Attend</span></h2>
+          <small>Admin Console v8.2</small>
+        </div>
+      </div>
+
+      <div class="nav-label">Main</div>
+      <button type="button" class="nav-item active" data-adm-tab="dashboard" onclick="switchAdminTab('dashboard')">Dashboard & Breakdown</button>
+      <button type="button" class="nav-item" data-adm-tab="sessions" onclick="switchAdminTab('sessions')">Live & Proxy <span class="nav-badge" id="adm-live-badge">0</span></button>
+
+      <div class="nav-label">Management</div>
+      <button type="button" class="nav-item" data-adm-tab="users" onclick="switchAdminTab('users')">Users, CRs & Bulk CSV</button>
+      <button type="button" class="nav-item" data-adm-tab="academics" onclick="switchAdminTab('academics')">Classes & Timetable Matrix</button>
+
+      <div class="nav-label">Reports & System</div>
+      <button type="button" class="nav-item" data-adm-tab="export" onclick="switchAdminTab('export')">Export Attendance (CSV/PDF)</button>
+      <button type="button" class="nav-item" data-adm-tab="devices" onclick="switchAdminTab('devices')">Devices & Audit Logs</button>
+      <button type="button" class="nav-item" data-adm-tab="settings" onclick="switchAdminTab('settings')">Settings (GPS, Class Geo & SMTP)</button>
+
+      <div class="sidebar-footer">
+        <div class="user-chip">
+          <div class="avatar">AD</div>
+          <div style="min-width:0;">
+            <div id="adm-chip-name" style="font-size:0.78rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Admin</div>
+            <div style="font-size:0.66rem;color:var(--text-mute);">Super Admin</div>
+          </div>
+        </div>
+        <button type="button" class="btn btn-ghost btn-full" onclick="openChangePassModal()">Change Password</button>
+        <button type="button" class="btn btn-danger btn-full" onclick="logoutUser()">Logout</button>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <button type="button" class="menu-toggle" onclick="document.getElementById('adm-sidebar').classList.toggle('open')">☰</button>
+        <div class="page-title" id="adm-page-title">Dashboard <span>Overview</span></div>
+        <div class="topbar-right">
+          <button type="button" class="btn btn-ghost" onclick="toggleTheme()" data-theme-btn>☀️ Light</button>
+          <button type="button" class="btn btn-ghost" onclick="refreshCurrentAdminTab()">↻ Refresh</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <!-- Admin Tab 1: Dashboard -->
+        <div class="page active" id="adm-tab-dashboard">
+          <div class="stats-grid">
+            <div class="stat-card"><div class="stat-value" id="adm-kpi-stu">0</div><div class="stat-label">Total Students & CRs</div></div>
+            <div class="stat-card green"><div class="stat-value" id="adm-kpi-fac">0</div><div class="stat-label">Total Faculty</div></div>
+            <div class="stat-card amber"><div class="stat-value" id="adm-kpi-cls">0</div><div class="stat-label">Active Classes</div></div>
+            <div class="stat-card red"><div class="stat-value" id="adm-kpi-live">0</div><div class="stat-label">Live Sessions Now</div></div>
+          </div>
+
+          <div class="chart-row">
+            <div class="panel" style="margin-bottom:0;">
+              <div class="panel-head"><div><h3>Class-Wise Attendance Comparison</h3><small>Present % across all classes</small></div></div>
+              <div class="bar-chart" id="adm-class-bar-chart"></div>
             </div>
-
-            <!-- Right: Scanned Roll Numbers + Manual Headcount Verification -->
-            <div class="lg:col-span-7 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 flex flex-col justify-between space-y-4">
-              <div>
-                <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
-                  <div>
-                    <h3 class="text-sm font-extrabold">Scanned Roll Numbers (<span id="fac-scan-count" class="text-emerald-500">0</span>)</h3>
-                    <p class="text-[11px] text-slate-500 dark:text-slate-400">Synced with QR scans and manual checkboxes below</p>
-                  </div>
-                  <div class="flex gap-1.5">
-                    <button type="button" onclick="copySessionRolls()" class="px-3 py-1.5 rounded-xl bg-sky-500 text-white text-xs font-bold">Copy Rolls</button>
-                    <button type="button" id="btn-fac-email" onclick="emailFacultySessionReport()" class="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-bold">Auto-Email</button>
-                  </div>
+            <div class="panel" style="margin-bottom:0;">
+              <div class="panel-head"><h3>Overall Breakdown</h3></div>
+              <div class="donut-wrap">
+                <div class="donut">
+                  <svg viewBox="0 0 100 100" width="140" height="140">
+                    <circle cx="50" cy="50" r="40" fill="none" stroke="rgba(148,163,184,0.16)" stroke-width="14"></circle>
+                    <circle id="adm-donut-arc" cx="50" cy="50" r="40" fill="none" stroke="#22c55e" stroke-width="14" stroke-dasharray="251.2" stroke-dashoffset="251.2" stroke-linecap="round"></circle>
+                  </svg>
+                  <div class="donut-center"><strong id="adm-donut-pct">0%</strong><small>Present</small></div>
                 </div>
-                <div id="fac-roll-pills" class="min-h-[150px] max-h-[220px] overflow-y-auto flex flex-wrap content-start gap-1.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs"></div>
-              </div>
-
-              <!-- Manual Headcount Box (Verification Only) -->
-              <div class="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 space-y-2.5">
-                <div class="text-xs font-extrabold uppercase text-slate-600 dark:text-slate-300">Headcount Verification (Verification Only — No Effect on Attendance)</div>
-                <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
-                  <div>
-                    <label class="block text-[10px] font-bold uppercase text-slate-500">Manual Headcount</label>
-                    <input id="fac-headcount-input" type="number" min="0" placeholder="Enter count" class="w-full mt-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-mono" />
-                  </div>
-                  <div class="p-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
-                    <div class="text-[10px] font-bold uppercase text-slate-500">QR Headcount</div>
-                    <div id="fac-qr-headcount" class="text-sm font-extrabold font-mono text-sky-600 dark:text-sky-400 mt-0.5">0</div>
-                  </div>
-                  <div class="flex flex-col gap-1.5">
-                    <span id="fac-headcount-status" class="text-center px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200">Not Compared</span>
-                    <button type="button" onclick="saveHeadcount('fac')" class="w-full py-1.5 rounded-xl bg-slate-900 dark:bg-sky-600 text-white text-xs font-bold">Save Headcount</button>
-                  </div>
+                <div class="legend">
+                  <div class="legend-item"><span class="legend-dot" style="background:var(--green)"></span> Present Marks <b id="adm-leg-p">0</b></div>
+                  <div class="legend-item"><span class="legend-dot" style="background:var(--amber)"></span> On-Duty Marks <b id="adm-leg-od">0</b></div>
+                  <div class="legend-item"><span class="legend-dot" style="background:var(--red)"></span> Pending Devices <b id="adm-leg-dev">0</b></div>
                 </div>
               </div>
             </div>
           </div>
 
-          <!-- Bottom Section: Full Manual Roster Below QR (Scroll Down) -->
-          <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h3 class="text-sm font-extrabold">Manual Attendance Roster (Below QR)</h3>
-                <p class="text-xs text-slate-500 dark:text-slate-400">Tick P or OD manually; synced live with scanned rolls above.</p>
-              </div>
-              <input id="fac-roster-search" oninput="renderLiveRoster()" type="text" placeholder="Filter roll, enrollment, or name..." class="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-xs" />
-            </div>
-            <div class="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl">
-              <table class="w-full text-left text-xs">
-                <thead class="bg-slate-50 dark:bg-slate-800 uppercase font-bold">
-                  <tr>
-                    <th class="p-3">Roll / Enroll</th>
-                    <th class="p-3">Name</th>
-                    <th class="p-3">Class</th>
-                    <th class="p-3 text-center">Present (P)</th>
-                    <th class="p-3 text-center">OD</th>
-                    <th class="p-3 text-center">Status</th>
-                  </tr>
-                </thead>
-                <tbody id="fac-manual-tbody" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
+          <div class="panel">
+            <div class="panel-head"><div><h3>Class-Wise Attendance Breakdown</h3><small>Students, Lectures Held, Present %, OD %, Absent %, and Defaulters (&lt;75%)</small></div></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Class</th><th>Students</th><th>Lectures</th><th>Present %</th><th>OD %</th><th>Absent %</th><th>Defaulters (&lt;75%)</th></tr></thead>
+                <tbody id="adm-breakdown-tbody"></tbody>
               </table>
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- Faculty Tab 2: My Classes & Merged -->
-      <div id="fac-tab-classes" class="fac-tab hidden space-y-4">
-        <div class="flex items-center justify-between">
-          <h2 class="text-base font-extrabold">My Assigned & Merged Timetable Slots</h2>
-          <button type="button" onclick="loadFacultyClasses(true)" class="px-3 py-1.5 rounded-xl border text-xs font-bold">↻ Refresh</button>
-        </div>
-        <div id="fac-classes-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-xs"></div>
-      </div>
-
-      <!-- Faculty Tab 3: Attendance History -->
-      <div id="fac-tab-matrix" class="fac-tab hidden space-y-4">
-        <div class="flex items-center justify-between">
-          <h2 class="text-base font-extrabold">Past Lectures & Headcount Log</h2>
-          <button type="button" onclick="loadFacultyMatrix(true)" class="px-3 py-1.5 rounded-xl border text-xs font-bold">↻ Refresh</button>
-        </div>
-        <div class="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-          <table class="w-full text-left text-xs">
-            <thead class="bg-slate-50 dark:bg-slate-800 uppercase font-bold">
-              <tr>
-                <th class="p-3">Session ID</th>
-                <th class="p-3">Date</th>
-                <th class="p-3">Classes</th>
-                <th class="p-3">Subject</th>
-                <th class="p-3 text-center">QR / Marked</th>
-                <th class="p-3 text-center">Manual HC</th>
-                <th class="p-3 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody id="fac-history-tbody" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
-          </table>
-        </div>
-      </div>
-    </main>
-  </section>
-
-  <!-- 5. ADMIN SCREEN (Lazy Tab Loading + Class-Wise Breakdown + Timetable Matrix) -->
-  <section id="screen-admin" class="hidden flex-1 flex flex-col md:flex-row">
-    <aside class="w-full md:w-64 bg-slate-900 text-slate-300 border-r border-slate-800 p-4 flex flex-col shrink-0">
-      <div class="pb-4 mb-4 border-b border-slate-800">
-        <div class="text-white font-extrabold text-sm">Admin <span class="text-sky-400">Console v8</span></div>
-        <div class="text-[11px] text-slate-400 mt-0.5">Lazy-Loaded Mission Control</div>
-      </div>
-      <nav class="flex md:flex-col gap-1 overflow-x-auto hide-scrollbar">
-        <button type="button" data-adm-tab="dashboard" onclick="switchAdminTab('dashboard')" class="adm-nav-btn text-left px-3 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap bg-slate-800 text-white">Dashboard & Breakdown</button>
-        <button type="button" data-adm-tab="users" onclick="switchAdminTab('users')" class="adm-nav-btn text-left px-3 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap hover:bg-slate-800">Users & CR Roles</button>
-        <button type="button" data-adm-tab="academics" onclick="switchAdminTab('academics')" class="adm-nav-btn text-left px-3 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap hover:bg-slate-800">IDs & Timetable Matrix</button>
-        <button type="button" data-adm-tab="sessions" onclick="switchAdminTab('sessions')" class="adm-nav-btn text-left px-3 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap hover:bg-slate-800">Sessions & Proxy</button>
-        <button type="button" data-adm-tab="devices" onclick="switchAdminTab('devices')" class="adm-nav-btn text-left px-3 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap hover:bg-slate-800">Devices & Audit Logs</button>
-        <button type="button" data-adm-tab="settings" onclick="switchAdminTab('settings')" class="adm-nav-btn text-left px-3 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap hover:bg-slate-800">GPS, Theme & SMTP</button>
-      </nav>
-      <div class="mt-auto pt-4 border-t border-slate-800 hidden md:block">
-        <button type="button" onclick="openChangePassModal()" class="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200">Change Password</button>
-      </div>
-    </aside>
-
-    <main class="flex-1 p-4 sm:p-6 space-y-5">
-      <!-- Admin Tab 1: Dashboard + Class-Wise Attendance Breakdown -->
-      <div id="adm-tab-dashboard" class="adm-tab space-y-5">
-        <div class="flex items-center justify-between">
-          <h1 class="text-lg font-extrabold">Dashboard & Class-Wise Attendance Breakdown</h1>
-          <button type="button" onclick="loadAdminDashboard(true)" class="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-bold">↻ Refresh</button>
-        </div>
-
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4"><div class="text-xs text-slate-500 font-bold">Students & CRs</div><div id="adm-kpi-stu" class="text-2xl font-extrabold mt-1">0</div></div>
-          <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4"><div class="text-xs text-slate-500 font-bold">Faculty</div><div id="adm-kpi-fac" class="text-2xl font-extrabold text-sky-500 mt-1">0</div></div>
-          <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4"><div class="text-xs text-slate-500 font-bold">Classes</div><div id="adm-kpi-cls" class="text-2xl font-extrabold text-emerald-500 mt-1">0</div></div>
-          <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4"><div class="text-xs text-slate-500 font-bold">Live Sessions</div><div id="adm-kpi-live" class="text-2xl font-extrabold text-amber-500 mt-1">0</div></div>
-        </div>
-
-        <!-- Class-Wise Attendance Breakdown Table -->
-        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3">
-          <div>
-            <h2 class="text-sm font-extrabold">Class-Wise Attendance Breakdown</h2>
-            <p class="text-xs text-slate-500 dark:text-slate-400">Present %, OD %, Absent %, Lectures Held, and Defaulters (&lt;75%) per class.</p>
-          </div>
-          <div class="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl">
-            <table class="w-full text-left text-xs">
-              <thead class="bg-slate-50 dark:bg-slate-800 uppercase font-bold">
-                <tr>
-                  <th class="p-3">Class</th>
-                  <th class="p-3 text-center">Students</th>
-                  <th class="p-3 text-center">Lectures</th>
-                  <th class="p-3 text-center">Present %</th>
-                  <th class="p-3 text-center">OD %</th>
-                  <th class="p-3 text-center">Absent %</th>
-                  <th class="p-3 text-center">Defaulters (&lt;75%)</th>
-                </tr>
-              </thead>
-              <tbody id="adm-breakdown-tbody" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <!-- Admin Tab 2: Users & CR Roles -->
-      <div id="adm-tab-users" class="adm-tab hidden space-y-5">
-        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 class="text-base font-extrabold">Users & CR Assignment</h2>
-              <p class="text-xs text-slate-500 dark:text-slate-400">Add Student, CR (2–3 per class), or Faculty (auto-generates FAC-XXX ID).</p>
-            </div>
-            <div class="flex gap-2">
-              <button type="button" onclick="loadAdminUsers(true)" class="px-3 py-2 rounded-xl border text-xs font-bold">↻ Refresh</button>
-              <button type="button" onclick="openSubAdminModal()" class="px-3 py-2 rounded-xl bg-amber-600 text-white text-xs font-bold">+ Sub-Admin</button>
-            </div>
-          </div>
-
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60">
-            <select id="new-u-role" class="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-xs font-bold">
-              <option value="student">Student</option>
-              <option value="cr">CR (Class Rep)</option>
-              <option value="faculty">Faculty</option>
+        <!-- Admin Tab 2: Users -->
+        <div class="page" id="adm-tab-users">
+          <div class="toolbar">
+            <input id="adm-user-search" oninput="renderAdminUsersTable()" placeholder="Search name, roll, enrollment, email, or FAC-ID..." class="input-box" style="flex:1;min-width:200px;">
+            <select id="adm-user-role-filter" onchange="renderAdminUsersTable()" class="input-box" style="width:auto;">
+              <option value="ALL">All Roles</option><option value="student">Students</option><option value="cr">CRs</option><option value="faculty">Faculty</option><option value="admin">Admins</option>
             </select>
-            <input id="new-u-name" placeholder="Full Name" class="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-xs" />
-            <input id="new-u-enroll" placeholder="Enrollment No" class="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-xs" />
-            <input id="new-u-roll" placeholder="Roll No" class="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-xs" />
-            <input id="new-u-email" placeholder="Email ID" class="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-xs" />
-            <select id="new-u-class" class="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-xs"></select>
-            <button type="button" onclick="createAdminUser()" class="rounded-lg bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs py-2">Add User</button>
+            <button type="button" onclick="openModal('modal-bulk-users')" class="btn btn-primary">⬆ Bulk Import Users (CSV)</button>
+            <button type="button" onclick="openSubAdminModal()" class="btn btn-amber">+ Sub-Admin</button>
           </div>
 
-          <div class="flex flex-wrap gap-2">
-            <input id="adm-user-search" oninput="renderAdminUsersTable()" placeholder="Search name, roll, enrollment, email, or FAC-ID..." class="flex-1 min-w-[200px] rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-            <select id="adm-user-role-filter" onchange="renderAdminUsersTable()" class="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-bold">
-              <option value="ALL">All Roles</option>
-              <option value="student">Students</option>
-              <option value="cr">CRs</option>
-              <option value="faculty">Faculty</option>
-              <option value="admin">Admins</option>
-            </select>
+          <div class="panel">
+            <div class="panel-head"><h3>Add Single User (Student / CR / Faculty)</h3><small>Faculty auto-generates unique FAC-XXX ID</small></div>
+            <div class="grid-6">
+              <select id="new-u-role" class="input-box"><option value="student">Student</option><option value="cr">CR (Class Rep)</option><option value="faculty">Faculty</option></select>
+              <input id="new-u-name" placeholder="Full Name" class="input-box">
+              <input id="new-u-enroll" placeholder="Enrollment No" class="input-box">
+              <input id="new-u-roll" placeholder="Roll No" class="input-box">
+              <input id="new-u-email" placeholder="Email ID" class="input-box">
+              <select id="new-u-class" class="input-box"></select>
+            </div>
+            <div style="margin-top:10px;display:flex;justify-content:flex-end;">
+              <button type="button" onclick="createAdminUser()" class="btn btn-primary">+ Add User</button>
+            </div>
           </div>
 
-          <div class="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl">
-            <table class="w-full text-left text-xs">
-              <thead class="bg-slate-50 dark:bg-slate-800 uppercase font-bold">
-                <tr>
-                  <th class="p-3">Role / ID</th>
-                  <th class="p-3">Name</th>
-                  <th class="p-3">Identifiers</th>
-                  <th class="p-3">Class</th>
-                  <th class="p-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody id="adm-users-tbody" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Role</th><th>Name</th><th>Identifiers / FAC-ID</th><th>Class</th><th>Actions</th></tr></thead>
+              <tbody id="adm-users-tbody"></tbody>
             </table>
           </div>
         </div>
-      </div>
 
-      <!-- Admin Tab 3: Auto-IDs + Timetable Matrix (Day x Time Slot) -->
-      <div id="adm-tab-academics" class="adm-tab hidden space-y-5">
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3">
-            <h2 class="text-sm font-extrabold">Classes (Auto Unique ID: CLS-XXX)</h2>
-            <div class="flex gap-2">
-              <input id="new-cls-name" placeholder="Class Name (e.g. MBA Sem 3 Div A)" class="flex-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-              <input id="new-cls-code" placeholder="Auto CLS-XXX" class="w-28 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-mono" />
-              <button type="button" onclick="createAdminClass()" class="px-3.5 py-2 rounded-xl bg-sky-500 text-white font-bold text-xs">+ Add</button>
+        <!-- Admin Tab 3: Academics & Timetable Matrix -->
+        <div class="page" id="adm-tab-academics">
+          <div class="grid-2">
+            <div class="panel">
+              <div class="panel-head"><h3>Classes (Auto CLS-XXX)</h3></div>
+              <div class="toolbar">
+                <input id="new-cls-name" placeholder="Class Name (e.g. MBA Sem 3 Div A)" class="input-box" style="flex:1;">
+                <input id="new-cls-code" placeholder="Auto CLS-XXX" class="input-box mono" style="width:130px;">
+                <button type="button" onclick="createAdminClass()" class="btn btn-primary">+ Add</button>
+              </div>
+              <div id="adm-classes-list" style="display:flex;flex-direction:column;gap:8px;"></div>
             </div>
-            <div id="adm-classes-list" class="space-y-1.5 text-xs"></div>
+
+            <div class="panel">
+              <div class="panel-head"><h3>Subjects (Auto SUB-XXX)</h3></div>
+              <div class="toolbar">
+                <input id="new-sub-name" placeholder="Subject Name" class="input-box" style="flex:1;">
+                <input id="new-sub-code" placeholder="Auto SUB-XXX" class="input-box mono" style="width:130px;">
+                <button type="button" onclick="createAdminSubject()" class="btn btn-primary">+ Add</button>
+              </div>
+              <div id="adm-subjects-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+            </div>
           </div>
 
-          <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3">
-            <h2 class="text-sm font-extrabold">Subjects (Auto Unique ID: SUB-XXX)</h2>
-            <div class="flex gap-2">
-              <input id="new-sub-name" placeholder="Subject Name" class="flex-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-              <input id="new-sub-code" placeholder="Auto SUB-XXX" class="w-28 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-mono" />
-              <button type="button" onclick="createAdminSubject()" class="px-3.5 py-2 rounded-xl bg-sky-500 text-white font-bold text-xs">+ Add</button>
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Class Timetable Matrix (Day × Time)</h3>
+                <small>Each class has its own timetable. Updates create a new version without altering past attendance.</small>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <select id="matrix-class-select" onchange="renderTimetableMatrix()" class="input-box" style="width:auto;"></select>
+                <button type="button" onclick="openModal('modal-bulk-tt')" class="btn btn-primary">⬆ Bulk Import Timetables (CSV)</button>
+              </div>
             </div>
-            <div id="adm-subjects-list" class="space-y-1.5 text-xs"></div>
+
+            <div class="grid-6" style="margin-bottom:12px;">
+              <input type="hidden" id="tt-edit-slot-id">
+              <select id="tt-day" class="input-box"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select>
+              <input id="tt-start" type="time" value="09:00" class="input-box">
+              <input id="tt-end" type="time" value="10:00" class="input-box">
+              <select id="tt-subject" class="input-box"></select>
+              <select id="tt-faculty" class="input-box"></select>
+              <select id="tt-merged-classes" multiple size="2" class="input-box" title="Hold Ctrl to merge 2+ classes"></select>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:16px;">
+              <button type="button" onclick="resetTimetableForm()" class="btn btn-ghost">Clear</button>
+              <button type="button" id="tt-save-btn" onclick="saveTimetableSlot()" class="btn btn-primary">Save Slot (New Version)</button>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead id="tt-matrix-head"></thead>
+                <tbody id="tt-matrix-body"></tbody>
+              </table>
+            </div>
           </div>
         </div>
 
-        <!-- Timetable Builder + Class-Wise Day x Time Matrix -->
-        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 class="text-base font-extrabold">Class Timetable Matrix (Day × Time)</h2>
-              <p class="text-xs text-slate-500 dark:text-slate-400">Each class has its own timetable. Updating a slot creates a new version without altering past records.</p>
+        <!-- Admin Tab 4: Sessions & Proxy -->
+        <div class="page" id="adm-tab-sessions">
+          <div class="panel">
+            <div class="panel-head"><h3>Assign Proxy Lecture (Auto SES-YYYYMMDD-XXX)</h3></div>
+            <div class="grid-3" style="margin-bottom:10px;">
+              <select id="proxy-class" class="input-box"></select>
+              <select id="proxy-subject" class="input-box"></select>
+              <select id="proxy-faculty" class="input-box"></select>
             </div>
-            <div class="flex items-center gap-2">
-              <select id="matrix-class-select" onchange="renderTimetableMatrix()" class="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-bold"></select>
-              <button type="button" onclick="loadAdminAcademics(true)" class="px-3 py-2 rounded-xl border text-xs font-bold">↻ Refresh</button>
-            </div>
+            <button type="button" onclick="assignProxySession()" class="btn btn-primary">Start Proxy Session</button>
           </div>
-
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 items-end">
-            <input type="hidden" id="tt-edit-slot-id" />
-            <div>
-              <label class="block text-[10px] font-bold uppercase text-slate-500">Day</label>
-              <select id="tt-day" class="w-full mt-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-xs font-bold">
-                <option value="1">Monday</option>
-                <option value="2">Tuesday</option>
-                <option value="3">Wednesday</option>
-                <option value="4">Thursday</option>
-                <option value="5">Friday</option>
-                <option value="6">Saturday</option>
-              </select>
-            </div>
-            <div>
-              <label class="block text-[10px] font-bold uppercase text-slate-500">Start</label>
-              <input id="tt-start" type="time" value="09:00" class="w-full mt-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-xs" />
-            </div>
-            <div>
-              <label class="block text-[10px] font-bold uppercase text-slate-500">End</label>
-              <input id="tt-end" type="time" value="10:00" class="w-full mt-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-xs" />
-            </div>
-            <div>
-              <label class="block text-[10px] font-bold uppercase text-slate-500">Subject</label>
-              <select id="tt-subject" class="w-full mt-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-xs"></select>
-            </div>
-            <div>
-              <label class="block text-[10px] font-bold uppercase text-slate-500">Faculty</label>
-              <select id="tt-faculty" class="w-full mt-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-xs"></select>
-            </div>
-            <div>
-              <label class="block text-[10px] font-bold uppercase text-slate-500">Merged Classes (2+)</label>
-              <select id="tt-merged-classes" multiple size="2" class="w-full mt-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-xs"></select>
-            </div>
-          </div>
-
-          <div class="flex justify-end gap-2">
-            <button type="button" onclick="resetTimetableForm()" class="px-3.5 py-2 rounded-xl border text-xs font-bold">Clear</button>
-            <button type="button" id="tt-save-btn" onclick="saveTimetableSlot()" class="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold">Save Slot (New Version)</button>
-          </div>
-
-          <!-- Visual Matrix Table -->
-          <div class="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl">
-            <table class="w-full text-left text-xs border-collapse">
-              <thead id="tt-matrix-head" class="bg-slate-50 dark:bg-slate-800 uppercase font-bold"></thead>
-              <tbody id="tt-matrix-body" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Session ID</th><th>Date</th><th>Classes</th><th>Subject</th><th>Faculty</th><th>Manual HC</th><th>Status</th><th>Action</th></tr></thead>
+              <tbody id="adm-sessions-tbody"></tbody>
             </table>
           </div>
         </div>
-      </div>
 
-      <!-- Admin Tab 4: Sessions & Proxy -->
-      <div id="adm-tab-sessions" class="adm-tab hidden space-y-5">
-        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3">
-          <div class="flex items-center justify-between">
-            <h2 class="text-base font-extrabold">Assign Proxy Lecture (Auto SES-ID)</h2>
-            <button type="button" onclick="loadAdminSessions(true)" class="px-3 py-1.5 rounded-xl border text-xs font-bold">↻ Refresh</button>
-          </div>
-          <div class="grid grid-cols-1 md:grid-cols-4 gap-2">
-            <select id="proxy-class" class="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs"></select>
-            <select id="proxy-subject" class="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs"></select>
-            <select id="proxy-faculty" class="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs"></select>
-            <button type="button" onclick="assignProxySession()" class="rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs py-2">Start Proxy Session</button>
-          </div>
-        </div>
-
-        <div class="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-          <table class="w-full text-left text-xs">
-            <thead class="bg-slate-50 dark:bg-slate-800 uppercase font-bold">
-              <tr>
-                <th class="p-3">Session ID</th>
-                <th class="p-3">Date</th>
-                <th class="p-3">Classes</th>
-                <th class="p-3">Subject</th>
-                <th class="p-3">Faculty</th>
-                <th class="p-3 text-center">Manual HC</th>
-                <th class="p-3 text-center">Status</th>
-                <th class="p-3 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody id="adm-sessions-tbody" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Admin Tab 5: Devices & Audit Logs -->
-      <div id="adm-tab-devices" class="adm-tab hidden space-y-5">
-        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3">
-          <div class="flex items-center justify-between">
-            <h2 class="text-base font-extrabold">Pending Device Requests</h2>
-            <button type="button" onclick="loadAdminDevicesLogs(true)" class="px-3 py-1.5 rounded-xl border text-xs font-bold">↻ Refresh</button>
-          </div>
-          <div id="adm-dev-list" class="space-y-2 text-xs"></div>
-        </div>
-
-        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3">
-          <h2 class="text-base font-extrabold">Security & Activity Logs</h2>
-          <div id="adm-logs-list" class="space-y-1.5 text-xs font-mono"></div>
-        </div>
-      </div>
-
-      <!-- Admin Tab 6: GPS, Theme & SMTP -->
-      <div id="adm-tab-settings" class="adm-tab hidden space-y-5">
-        <div class="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4 max-w-3xl">
-          <h2 class="text-base font-extrabold">Branding, Default Theme, GPS & SMTP</h2>
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label class="block text-[10px] font-bold uppercase text-slate-500 mb-1">App Title</label>
-              <input id="set-app-title" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
+        <!-- Admin Tab 5: Export Attendance Reports -->
+        <div class="page" id="adm-tab-export">
+          <div class="panel">
+            <div class="panel-head"><h3>Export Attendance Reports</h3><small>Generate Summary &amp; Defaulters (&lt;75%), Date-Wise Matrix (P/OD/A), or Detailed Audit Log.</small></div>
+            <div class="grid-4" style="align-items:end;margin-bottom:14px;">
+              <div class="field" style="margin:0;"><label>Class</label><select id="exp-class" class="input-box"></select></div>
+              <div class="field" style="margin:0;"><label>From Date</label><input id="exp-from" type="date" class="input-box"></div>
+              <div class="field" style="margin:0;"><label>To Date</label><input id="exp-to" type="date" class="input-box"></div>
+              <div class="field" style="margin:0;"><label>Report Format</label>
+                <select id="exp-format" class="input-box">
+                  <option value="summary">Summary &amp; Defaulters (&lt;75%)</option>
+                  <option value="matrix">Date-Wise Matrix (P/OD/A)</option>
+                  <option value="audit">Detailed Audit Log</option>
+                </select>
+              </div>
             </div>
-            <div>
-              <label class="block text-[10px] font-bold uppercase text-slate-500 mb-1">College Name</label>
-              <input id="set-college-name" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-            </div>
-            <div>
-              <label class="block text-[10px] font-bold uppercase text-slate-500 mb-1">Default Theme</label>
-              <select id="set-default-theme" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-bold">
-                <option value="dark">Dark Mode</option>
-                <option value="light">Light Mode</option>
-              </select>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button type="button" onclick="generateAdminExport()" class="btn btn-primary">Generate Preview</button>
+              <button type="button" id="btn-exp-csv" onclick="downloadAdminExportCsv()" class="btn btn-green hidden">⬇ Download CSV</button>
+              <button type="button" id="btn-exp-copy" onclick="copyAdminExportTable()" class="btn btn-ghost hidden">Copy Table</button>
+              <button type="button" id="btn-exp-print" onclick="window.print()" class="btn btn-ghost hidden">Print / PDF</button>
             </div>
           </div>
 
-          <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
-            <label class="flex items-center gap-2 text-xs font-bold"><input id="set-geo-enabled" type="checkbox" /> Campus GPS</label>
-            <input id="set-geo-lat" placeholder="Lat" class="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-mono" />
-            <input id="set-geo-lng" placeholder="Lng" class="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-mono" />
-            <input id="set-geo-rad" type="number" placeholder="Radius (m)" class="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-mono" />
+          <div id="print-export-area" class="panel hidden">
+            <div id="exp-meta" style="font-size:0.76rem;color:var(--text-mute);margin-bottom:10px;"></div>
+            <div class="table-wrap"><table id="exp-preview-table"></table></div>
+          </div>
+        </div>
+
+        <!-- Admin Tab 6: Devices & Audit Logs -->
+        <div class="page" id="adm-tab-devices">
+          <div class="panel">
+            <div class="panel-head"><h3>Pending Device Change Requests</h3></div>
+            <div id="adm-dev-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>Security & Activity Audit Logs</h3></div>
+            <div id="adm-logs-list" style="display:flex;flex-direction:column;gap:6px;font-family:'Courier New',monospace;font-size:0.78rem;"></div>
+          </div>
+        </div>
+
+        <!-- Admin Tab 7: Settings -->
+        <div class="page" id="adm-tab-settings">
+          <div class="panel" style="max-width:860px;">
+            <div class="panel-head">
+              <div><h3>Branding, Default Theme, Campus GPS &amp; Gmail SMTP</h3><small>Set campus-wide geofence coordinates or use your current GPS location.</small></div>
+              <button type="button" onclick="fillCurrentGps('set-geo-lat', 'set-geo-lng')" class="btn btn-amber">📍 Use My Current Location</button>
+            </div>
+            <div class="grid-3" style="margin-bottom:14px;">
+              <div class="field"><label>App Title</label><input id="set-app-title" class="input-box"></div>
+              <div class="field"><label>College Name</label><input id="set-college-name" class="input-box"></div>
+              <div class="field"><label>Default Theme</label><select id="set-default-theme" class="input-box"><option value="dark">Dark Mode</option><option value="light">Light Mode</option></select></div>
+            </div>
+            <div class="grid-3" style="margin-bottom:14px;align-items:end;">
+              <label style="font-size:0.82rem;font-weight:700;display:flex;align-items:center;gap:8px;"><input id="set-geo-enabled" type="checkbox"> Enable Campus GPS</label>
+              <div class="field" style="margin:0;"><label>Campus Latitude</label><input id="set-geo-lat" class="input-box mono"></div>
+              <div class="field" style="margin:0;"><label>Campus Longitude</label><input id="set-geo-lng" class="input-box mono"></div>
+            </div>
+            <div class="grid-3" style="margin-bottom:16px;">
+              <div class="field"><label>Radius (Meters)</label><input id="set-geo-rad" type="number" class="input-box mono"></div>
+              <div class="field"><label>Sender Gmail (Auto-Email)</label><input id="set-smtp-email" class="input-box"></div>
+              <div class="field"><label>16-Char App Password</label><input id="set-smtp-pass" type="password" class="input-box mono"></div>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+              <button type="button" onclick="saveAdminSettings()" class="btn btn-primary">Save Settings</button>
+              <button type="button" onclick="testAdminSmtp()" class="btn btn-ghost">Send Test Email</button>
+            </div>
           </div>
 
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <input id="set-smtp-email" placeholder="Sender Gmail" class="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-            <input id="set-smtp-pass" type="password" placeholder="16-char App Password (optional)" class="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-mono" />
-          </div>
-
-          <div class="flex flex-wrap gap-2">
-            <button type="button" onclick="saveAdminSettings()" class="px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs">Save Settings</button>
-            <button type="button" onclick="testAdminSmtp()" class="px-4 py-2.5 rounded-xl border text-xs font-bold">Send Test Email</button>
+          <div class="panel" style="max-width:860px;">
+            <div class="panel-head">
+              <div><h3>Individual Class Geofence Overrides</h3><small>Override campus GPS with custom building/classroom coordinates for specific classes.</small></div>
+              <button type="button" onclick="loadClassGeoList()" class="btn btn-ghost">↻ Load Classes</button>
+            </div>
+            <div id="adm-class-geo-list" style="display:flex;flex-direction:column;gap:10px;"></div>
           </div>
         </div>
       </div>
-    </main>
-  </section>
-
-  <!-- MODAL: EDIT USER (Includes Student <-> CR promotion) -->
-  <div id="modal-edit-user" class="hidden fixed inset-0 z-50 bg-slate-950/75 flex items-center justify-center p-4">
-    <div class="w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 space-y-3">
-      <div class="flex items-center justify-between">
-        <h3 class="text-sm font-extrabold">Edit User / CR Role</h3>
-        <button type="button" onclick="closeModal('modal-edit-user')" class="text-xs font-bold text-slate-400">✕</button>
-      </div>
-      <input type="hidden" id="eu-id" />
-      <div>
-        <label class="block text-[10px] font-bold uppercase text-slate-500">Role</label>
-        <select id="eu-role" class="w-full mt-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-bold">
-          <option value="student">Student</option>
-          <option value="cr">CR (Class Rep)</option>
-          <option value="faculty">Faculty</option>
-          <option value="admin">Admin</option>
-        </select>
-      </div>
-      <div>
-        <label class="block text-[10px] font-bold uppercase text-slate-500">Full Name</label>
-        <input id="eu-name" class="w-full mt-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-      </div>
-      <div class="grid grid-cols-2 gap-2">
-        <div>
-          <label class="block text-[10px] font-bold uppercase text-slate-500">Enrollment No</label>
-          <input id="eu-enroll" class="w-full mt-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-        </div>
-        <div>
-          <label class="block text-[10px] font-bold uppercase text-slate-500">Roll No</label>
-          <input id="eu-roll" class="w-full mt-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-        </div>
-      </div>
-      <div>
-        <label class="block text-[10px] font-bold uppercase text-slate-500">Email</label>
-        <input id="eu-email" class="w-full mt-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-      </div>
-      <div>
-        <label class="block text-[10px] font-bold uppercase text-slate-500">Class</label>
-        <select id="eu-class" class="w-full mt-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs"></select>
-      </div>
-      <div>
-        <label class="block text-[10px] font-bold uppercase text-slate-500">New Password (Optional)</label>
-        <input id="eu-pass" type="password" class="w-full mt-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-      </div>
-      <div class="flex gap-4 text-xs font-bold">
-        <label class="flex items-center gap-1.5"><input id="eu-active" type="checkbox" /> Active</label>
-        <label class="flex items-center gap-1.5 text-amber-600"><input id="eu-reset-dev" type="checkbox" /> Reset Device</label>
-      </div>
-      <button type="button" onclick="saveEditedUser()" class="w-full py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs">Save User</button>
     </div>
   </div>
+</section>
 
-  <!-- MODAL: CHANGE OWN PASSWORD -->
-  <div id="modal-change-pass" class="hidden fixed inset-0 z-50 bg-slate-950/75 flex items-center justify-center p-4">
-    <div class="w-full max-w-sm rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 space-y-3">
-      <div class="flex items-center justify-between">
-        <h3 class="text-sm font-extrabold">Change Password</h3>
-        <button type="button" onclick="closeModal('modal-change-pass')" class="text-xs font-bold text-slate-400">✕</button>
-      </div>
-      <input id="cp-old" type="password" placeholder="Current Password" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-      <input id="cp-new1" type="password" placeholder="New Password" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-      <input id="cp-new2" type="password" placeholder="Re-Enter New Password" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-      <button type="button" onclick="submitModalPasswordChange()" class="w-full py-2.5 rounded-xl bg-sky-500 text-white font-bold text-xs">Update Password</button>
+<!-- ==================== MODALS ==================== -->
+<div id="modal-projector" class="modal-overlay hidden" style="background:#020617;">
+  <div style="text-align:center;color:#fff;max-width:520px;width:100%;">
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+      <button type="button" onclick="closeModal('modal-projector')" class="btn btn-danger">Exit Projector</button>
     </div>
+    <h2 id="proj-title" style="font-size:1.5rem;font-weight:800;margin-bottom:6px;"></h2>
+    <div id="proj-code" class="mono" style="color:var(--accent);margin-bottom:16px;"></div>
+    <div id="proj-qr-box" style="background:#fff;padding:18px;border-radius:20px;display:inline-block;"></div>
+    <div id="proj-clock" class="mono" style="margin-top:16px;font-size:1.25rem;color:var(--green);">--:--:-- IST</div>
   </div>
+</div>
 
-  <!-- MODAL: SUB-ADMIN -->
-  <div id="modal-subadmin" class="hidden fixed inset-0 z-50 bg-slate-950/75 flex items-center justify-center p-4">
-    <div class="w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 space-y-3">
-      <div class="flex items-center justify-between">
-        <h3 class="text-sm font-extrabold">Add Sub-Admin</h3>
-        <button type="button" onclick="closeModal('modal-subadmin')" class="text-xs font-bold text-slate-400">✕</button>
-      </div>
-      <input id="sa-name" placeholder="Sub-Admin Name" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-      <input id="sa-email" placeholder="Sub-Admin Email" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-      <input id="sa-pass" type="password" placeholder="Password (default Admin@123)" class="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs" />
-      <button type="button" onclick="saveNewSubAdmin()" class="w-full py-2.5 rounded-xl bg-amber-600 text-white font-bold text-xs">Create Sub-Admin</button>
+<div id="modal-bulk-users" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-head"><h3>Bulk Import Users (Students, CRs &amp; Faculty)</h3><button type="button" class="btn btn-ghost" onclick="closeModal('modal-bulk-users')">✕</button></div>
+    <p style="font-size:0.76rem;color:var(--text-dim);margin-bottom:10px;">CSV columns: <code class="mono">role,enrollment_no,roll_no,full_name,email,class_code,password</code></p>
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <button type="button" onclick="downloadSampleUsersCsv()" class="btn btn-ghost">⬇ Sample CSV</button>
+      <input type="file" accept=".csv" onchange="loadCsvIntoTextarea(event, 'bulk-users-csv')" class="input-box" style="padding:6px;">
     </div>
+    <textarea id="bulk-users-csv" rows="6" placeholder="Paste CSV rows here..." class="input-box mono" style="font-size:0.74rem;margin-bottom:12px;"></textarea>
+    <button type="button" onclick="submitBulkUsers()" class="btn btn-primary btn-full">Import Users Now</button>
   </div>
+</div>
 
-  <script src="js/app.js?v=8.0"></script>
+<div id="modal-bulk-tt" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-head"><h3>Bulk Import Timetables (Multi-Class / Merged)</h3><button type="button" class="btn btn-ghost" onclick="closeModal('modal-bulk-tt')">✕</button></div>
+    <p style="font-size:0.76rem;color:var(--text-dim);margin-bottom:10px;">CSV columns: <code class="mono">class_code,subject_code,faculty_email,day_of_week,start_time,end_time</code> (use <code class="mono">CLS-001+CLS-002</code> for merged classes, day 1=Mon..6=Sat)</p>
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <button type="button" onclick="downloadSampleTtCsv()" class="btn btn-ghost">⬇ Sample Timetable CSV</button>
+      <input type="file" accept=".csv" onchange="loadCsvIntoTextarea(event, 'bulk-tt-csv')" class="input-box" style="padding:6px;">
+    </div>
+    <textarea id="bulk-tt-csv" rows="6" placeholder="Paste CSV rows here..." class="input-box mono" style="font-size:0.74rem;margin-bottom:12px;"></textarea>
+    <button type="button" onclick="submitBulkTimetable()" class="btn btn-primary btn-full">Import Timetable Slots</button>
+  </div>
+</div>
+
+<div id="modal-edit-user" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-head"><h3>Edit User / Assign CR &amp; Faculty Rights</h3><button type="button" class="btn btn-ghost" onclick="closeModal('modal-edit-user')">✕</button></div>
+    <input type="hidden" id="eu-id">
+    <div class="field"><label>Role</label><select id="eu-role" onchange="toggleFacultyPermsBox()" class="input-box"><option value="student">Student</option><option value="cr">CR (Class Rep)</option><option value="faculty">Faculty</option><option value="admin">Admin</option></select></div>
+    <div class="field"><label>Full Name</label><input id="eu-name" class="input-box"></div>
+    <div class="grid-2">
+      <div class="field"><label>Enrollment No</label><input id="eu-enroll" class="input-box"></div>
+      <div class="field"><label>Roll No</label><input id="eu-roll" class="input-box"></div>
+    </div>
+    <div class="field"><label>Email</label><input id="eu-email" class="input-box"></div>
+    <div class="field"><label>Class</label><select id="eu-class" class="input-box"></select></div>
+    <div class="field"><label>New Password (Optional)</label><input id="eu-pass" type="password" class="input-box"></div>
+
+    <div id="eu-fac-perms-box" class="hidden">
+      <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;color:var(--accent);margin-bottom:6px;">Faculty Permissions</div>
+      <div class="perm-grid">
+        <label><input type="checkbox" id="fp-regular"> Start Regular</label>
+        <label><input type="checkbox" id="fp-extra"> Start Extra</label>
+        <label><input type="checkbox" id="fp-od"> Mark OD</label>
+        <label><input type="checkbox" id="fp-edit"> Edit Attendance</label>
+        <label><input type="checkbox" id="fp-gps"> Toggle GPS</label>
+        <label><input type="checkbox" id="fp-export"> Export Reports</label>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:16px;margin-bottom:14px;font-size:0.8rem;font-weight:700;">
+      <label><input id="eu-active" type="checkbox"> Active</label>
+      <label style="color:var(--amber);"><input id="eu-reset-dev" type="checkbox"> Reset Device</label>
+    </div>
+    <button type="button" onclick="saveEditedUser()" class="btn btn-primary btn-full">Save Changes</button>
+  </div>
+</div>
+
+<div id="modal-change-pass" class="modal-overlay hidden">
+  <div class="modal-card" style="max-width:380px;">
+    <div class="modal-head"><h3>Change Password</h3><button type="button" class="btn btn-ghost" onclick="closeModal('modal-change-pass')">✕</button></div>
+    <div class="field"><label>Current Password</label><input id="cp-old" type="password" class="input-box"></div>
+    <div class="field"><label>New Password</label><input id="cp-new1" type="password" class="input-box"></div>
+    <div class="field"><label>Confirm New Password</label><input id="cp-new2" type="password" class="input-box"></div>
+    <button type="button" onclick="submitModalPasswordChange()" class="btn btn-primary btn-full">Update Password</button>
+  </div>
+</div>
+
+<div id="modal-subadmin" class="modal-overlay hidden">
+  <div class="modal-card" style="max-width:440px;">
+    <div class="modal-head"><h3>Add Sub-Admin &amp; Granular Rights</h3><button type="button" class="btn btn-ghost" onclick="closeModal('modal-subadmin')">✕</button></div>
+    <div class="field"><label>Name</label><input id="sa-name" class="input-box"></div>
+    <div class="field"><label>Email</label><input id="sa-email" class="input-box"></div>
+    <div class="field"><label>Password (default Admin@123)</label><input id="sa-pass" type="password" class="input-box"></div>
+    <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;color:var(--accent);margin-bottom:6px;">Sub-Admin Permissions</div>
+    <div class="perm-grid">
+      <label><input type="checkbox" id="sap-users" checked> Manage Users</label>
+      <label><input type="checkbox" id="sap-acad" checked> Manage Academics</label>
+      <label><input type="checkbox" id="sap-tt" checked> Manage Timetable</label>
+      <label><input type="checkbox" id="sap-proxy" checked> Assign Proxy</label>
+      <label><input type="checkbox" id="sap-dev" checked> Approve Devices</label>
+      <label><input type="checkbox" id="sap-geo"> Manage Geofence</label>
+      <label><input type="checkbox" id="sap-set"> Manage Settings</label>
+      <label><input type="checkbox" id="sap-rep" checked> View Reports</label>
+      <label><input type="checkbox" id="sap-adm"> Manage Admins</label>
+    </div>
+    <button type="button" onclick="saveNewSubAdmin()" class="btn btn-amber btn-full">Create Sub-Admin</button>
+  </div>
+</div>
+
+<script src="js/app.js?v=8.2"></script>
 </body>
 </html>
