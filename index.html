@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SmartQR Attendance v8.2</title>
+<title>SmartQR Attendance v8.3</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 <style>
@@ -494,6 +494,7 @@
       <button type="button" class="nav-item active" data-fac-tab="live" onclick="switchFacultyTab('live')">Live QR & Roster</button>
       <button type="button" class="nav-item" data-fac-tab="classes" onclick="switchFacultyTab('classes')">My Classes & Merged</button>
       <button type="button" class="nav-item" data-fac-tab="matrix" onclick="switchFacultyTab('matrix')">Past Lectures</button>
+      <button type="button" class="nav-item" data-fac-tab="devices" onclick="switchFacultyTab('devices')">Device Requests</button>
       <div class="sidebar-footer">
         <button type="button" class="btn btn-ghost btn-full" onclick="openChangePassModal()">Change Password</button>
         <button type="button" class="btn btn-danger btn-full" onclick="logoutUser()">Logout</button>
@@ -518,7 +519,7 @@
                 <select id="fac-start-class" class="input-box" style="margin-top:5px;"></select>
               </div>
               <div>
-                <label style="font-size:0.68rem;font-weight:700;color:var(--accent);text-transform:uppercase;">Merged Classes (Optional 2+)</label>
+                <label style="font-size:0.68rem;font-weight:700;color:var(--accent);text-transform:uppercase;">Merged Classes (Optional — Leave Unselected for Single Class)</label>
                 <select id="fac-merge-classes" multiple size="2" class="input-box" style="margin-top:5px;"></select>
               </div>
               <div>
@@ -614,6 +615,20 @@
             </table>
           </div>
         </div>
+        <div class="page" id="fac-tab-devices">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Student Device Change Requests</h3>
+                <small>Not auto-loaded for speed — click Refresh to check pending requests.</small>
+              </div>
+              <button type="button" onclick="loadFacultyDeviceRequests()" class="btn btn-primary">↻ Refresh Requests</button>
+            </div>
+            <div id="fac-dev-list" style="display:flex;flex-direction:column;gap:8px;">
+              <p style="color:var(--text-mute);font-size:0.82rem;">Click <strong>↻ Refresh Requests</strong> to load pending student device requests.</p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -627,7 +642,7 @@
         <div class="sidebar-logo"><img src="assets/logo.png" onerror="this.style.display='none';this.parentElement.textContent='QR';" alt="QR"></div>
         <div>
           <h2>QR <span>Attend</span></h2>
-          <small>Admin Console v8.2</small>
+          <small>Admin Console v8.3</small>
         </div>
       </div>
 
@@ -642,7 +657,8 @@
       <div class="nav-label">Reports & System</div>
       <button type="button" class="nav-item" data-adm-tab="export" onclick="switchAdminTab('export')">Export Attendance (CSV/PDF)</button>
       <button type="button" class="nav-item" data-adm-tab="devices" onclick="switchAdminTab('devices')">Devices & Audit Logs</button>
-      <button type="button" class="nav-item" data-adm-tab="settings" onclick="switchAdminTab('settings')">Settings (GPS, Class Geo & SMTP)</button>
+      <button type="button" class="nav-item" data-adm-tab="performance" onclick="switchAdminTab('performance')">Performance &amp; Timers</button>
+      <button type="button" class="nav-item" data-adm-tab="settings" onclick="switchAdminTab('settings')">Settings (GPS, Class Geo &amp; SMTP)</button>
 
       <div class="sidebar-footer">
         <div class="user-chip">
@@ -866,6 +882,44 @@
           </div>
         </div>
 
+                <!-- Admin Tab 8: Performance & Timers -->
+        <div class="page" id="adm-tab-performance">
+          <div class="panel" style="max-width:780px;">
+            <div class="panel-head">
+              <div>
+                <h3>Performance, QR Rotation &amp; Live Polling Timers</h3>
+                <small>Customize how often QR codes rotate and how often live attendance rosters poll the server.</small>
+              </div>
+            </div>
+            <div class="grid-2" style="margin-bottom:18px;align-items:center;">
+              <div class="field" style="margin:0;">
+                <label>QR Code Refresh Timer (5–60s): <span id="perf-qr-val" class="mono" style="color:var(--green);">15s</span></label>
+                <input id="perf-qr-timer" type="range" min="5" max="60" step="5" value="15" oninput="document.getElementById('perf-qr-val').textContent=this.value+'s'" style="width:100%;margin-top:6px;accent-color:var(--accent);cursor:pointer;">
+                <div style="font-size:0.72rem;color:var(--text-mute);margin-top:4px;">Lower = stricter anti-proxy · Higher = fewer server calls.</div>
+              </div>
+              <div class="field" style="margin:0;">
+                <label>Live Roster Poll Interval (2–30s): <span id="perf-poll-val" class="mono" style="color:var(--accent);">4s</span></label>
+                <input id="perf-poll-timer" type="range" min="2" max="30" step="1" value="4" oninput="document.getElementById('perf-poll-val').textContent=this.value+'s'" style="width:100%;margin-top:6px;accent-color:var(--accent);cursor:pointer;">
+                <div style="font-size:0.72rem;color:var(--text-mute);margin-top:4px;">Controls how often Faculty &amp; CR fetch new QR scans (lightweight delta poll).</div>
+              </div>
+            </div>
+            <div class="grid-2" style="margin-bottom:18px;">
+              <div class="field" style="margin:0;">
+                <label>Session Auto-Timeout (Minutes)</label>
+                <input id="perf-sess-timeout" type="number" min="10" max="480" value="60" class="input-box mono">
+              </div>
+              <div style="padding:12px;border-radius:10px;background:var(--bg-3);border:1px solid var(--border);font-size:0.76rem;color:var(--text-dim);">
+                <strong style="color:var(--green);">Active Optimizations:</strong><br>
+                • 1-request startup (<code>init</code>)<br>
+                • Lightweight delta scan polling<br>
+                • Auto-pause when tab is hidden<br>
+                • Optimistic instant manual ticks
+              </div>
+            </div>
+            <button type="button" onclick="saveAdminPerformance()" class="btn btn-primary">Save Performance &amp; Timer Settings</button>
+          </div>
+        </div>
+
         <!-- Admin Tab 7: Settings -->
         <div class="page" id="adm-tab-settings">
           <div class="panel" style="max-width:860px;">
@@ -878,6 +932,7 @@
               <div class="field"><label>College Name</label><input id="set-college-name" class="input-box"></div>
               <div class="field"><label>Default Theme</label><select id="set-default-theme" class="input-box"><option value="dark">Dark Mode</option><option value="light">Light Mode</option></select></div>
             </div>
+
             <div class="grid-3" style="margin-bottom:14px;align-items:end;">
               <label style="font-size:0.82rem;font-weight:700;display:flex;align-items:center;gap:8px;"><input id="set-geo-enabled" type="checkbox"> Enable Campus GPS</label>
               <div class="field" style="margin:0;"><label>Campus Latitude</label><input id="set-geo-lat" class="input-box mono"></div>
@@ -936,7 +991,7 @@
 <div id="modal-bulk-tt" class="modal-overlay hidden">
   <div class="modal-card">
     <div class="modal-head"><h3>Bulk Import Timetables (Multi-Class / Merged)</h3><button type="button" class="btn btn-ghost" onclick="closeModal('modal-bulk-tt')">✕</button></div>
-    <p style="font-size:0.76rem;color:var(--text-dim);margin-bottom:10px;">CSV columns: <code class="mono">class_code,subject_code,faculty_email,day_of_week,start_time,end_time</code> (use <code class="mono">CLS-001+CLS-002</code> for merged classes, day 1=Mon..6=Sat)</p>
+    <p style="font-size:0.76rem;color:var(--text-dim);margin-bottom:10px;">Excel-friendly CSV: <code class="mono">class_code,subject_code,faculty_email,day_of_week,start_time,end_time</code> (Day accepts <b>Monday/Mon</b> or <b>1-6</b>; missing Class/Subject codes auto-create!)</p>
     <div style="display:flex;gap:8px;margin-bottom:10px;">
       <button type="button" onclick="downloadSampleTtCsv()" class="btn btn-ghost">⬇ Sample Timetable CSV</button>
       <input type="file" accept=".csv" onchange="loadCsvIntoTextarea(event, 'bulk-tt-csv')" class="input-box" style="padding:6px;">
@@ -1012,6 +1067,26 @@
   </div>
 </div>
 
-<script src="js/app.js?v=8.2"></script>
+<!-- Student Device Mismatch Popup (on QR Scan) -->
+<div id="modal-stu-dev-mismatch" class="modal-overlay hidden">
+  <div class="modal-card" style="max-width:420px;">
+    <div class="modal-head">
+      <h3 style="color:var(--amber);">Unrecognized Device</h3>
+      <button type="button" class="btn btn-ghost" onclick="closeModal('modal-stu-dev-mismatch')">✕</button>
+    </div>
+    <p id="stu-mismatch-text" style="font-size:0.8rem;color:var(--text-dim);margin-bottom:12px;">Your account is bound to another device, so attendance cannot be marked from this browser. Submit a Device Change Request to your Faculty or Admin.</p>
+    <div style="padding:10px 12px;border-radius:10px;background:var(--bg-3);border:1px solid var(--border);margin-bottom:12px;">
+      <div style="font-size:0.65rem;text-transform:uppercase;color:var(--text-mute);font-weight:700;">This Browser Device ID</div>
+      <code id="stu-mismatch-fp" class="mono" style="color:var(--accent);font-size:0.82rem;">...</code>
+    </div>
+    <div class="field">
+      <label>Reason for Device Change</label>
+      <input id="stu-mismatch-reason" type="text" placeholder="e.g., Bought new phone or switched browser" class="input-box">
+    </div>
+    <button type="button" onclick="submitDeviceRequestFromPopup()" class="btn btn-amber btn-full">Submit Device Change Request</button>
+  </div>
+</div>
+
+<script src="js/app.js?v=8.3"></script>
 </body>
 </html>

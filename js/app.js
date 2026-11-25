@@ -3,6 +3,10 @@ let SETTINGS = {};
 let PENDING_MISMATCH = null;
 let CURRENT_ADMIN_TAB = 'dashboard';
 let QR_PAUSED = false;
+let STARTING_SESSION = false;
+let LAST_RENDERED_NONCE = '';
+let LAST_FAC_ROSTER_SIG = '';
+let LAST_CR_ROSTER_SIG = '';
 let LAST_EXPORT_ROWS = [];
 
 const LOADED_TABS = {
@@ -105,15 +109,14 @@ function resetLazyFlags() { Object.keys(LOADED_TABS).forEach(k => { LOADED_TABS[
 
 async function initApp() {
   document.getElementById('login-fp-code').textContent = getDeviceFp();
-  const sRes = await api('get_settings');
-  if (sRes.ok && sRes.settings) {
-    SETTINGS = sRes.settings;
+  const res = await api('init');
+  if (res.ok && res.settings) {
+    SETTINGS = res.settings;
     if (SETTINGS.app_title) document.getElementById('brand-title-login').innerHTML = `${SETTINGS.app_title}`;
     if (SETTINGS.college_name) document.getElementById('brand-college-login').textContent = SETTINGS.college_name;
   }
   initTheme();
-  const me = await api('whoami');
-  if (me.ok && me.user) routeToRole(me.user);
+  if (res.ok && res.user) routeToRole(res.user);
   else showScreen('login');
 }
 
@@ -250,7 +253,18 @@ async function submitStudentQr(rawText) {
   try { payload = JSON.parse(rawText); } catch { return toast('Invalid QR code.', true); }
   const send = async (lat = null, lng = null) => {
     const res = await api('submit_qr', { session_id: payload.s || payload.sid, nonce: payload.n, device_fp: getDeviceFp(), lat, lng });
-    if (!res.ok) { document.getElementById('stu-scan-status').textContent = res.message || res.error; return toast(res.message || res.error, true); }
+    if (!res.ok) {
+      if (res.error === 'DEVICE_MISMATCH') {
+        document.getElementById('stu-scan-status').textContent = 'Device mismatch — submit a change request.';
+        document.getElementById('stu-mismatch-text').textContent = res.message || 'Unrecognized device. Submit a Device Change Request.';
+        document.getElementById('stu-mismatch-fp').textContent = getDeviceFp();
+        document.getElementById('stu-mismatch-reason').value = '';
+        openModal('modal-stu-dev-mismatch');
+        return;
+      }
+      document.getElementById('stu-scan-status').textContent = res.message || res.error;
+      return toast(res.message || res.error, true);
+    }
     document.getElementById('stu-scan-status').textContent = 'Attendance Marked Present (P) ✓';
     toast('Attendance Marked Present (P)!');
   };
@@ -280,6 +294,14 @@ async function submitStudentPassword() {
   ['stu-cp-old', 'stu-cp-new1', 'stu-cp-new2'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('stu-cp-match-hint').textContent = '';
   toast('Password updated!');
+}
+
+async function submitDeviceRequestFromPopup() {
+  const reason = document.getElementById('stu-mismatch-reason').value.trim();
+  const r = await api('request_device_change', { student_id: CURRENT_USER?.id, new_device_fp: getDeviceFp(), reason });
+  if (!r.ok) return toast(r.error, true);
+  closeModal('modal-stu-dev-mismatch');
+  toast(r.message || 'Device change request submitted!');
 }
 
 async function submitStudentDeviceRequest() {
@@ -431,10 +453,10 @@ async function crMarkSelfAttendance() {
 
 // ================= FACULTY PORTAL =================
 async function switchFacultyTab(tab) {
-  ['live', 'classes', 'matrix'].forEach(t => document.getElementById(`fac-tab-${t}`).classList.toggle('active', t === tab));
+  ['live', 'classes', 'matrix', 'devices'].forEach(t => document.getElementById(`fac-tab-${t}`).classList.toggle('active', t === tab));
   document.querySelectorAll('[data-fac-tab]').forEach(b => b.classList.toggle('active', b.dataset.facTab === tab));
   document.getElementById('fac-sidebar').classList.remove('open');
-  const titles = { live: 'Live QR <span>& Roster</span>', classes: 'My Classes <span>& Merged</span>', matrix: 'Past <span>Lectures</span>' };
+  const titles = { live: 'Live QR <span>& Roster</span>', classes: 'My Classes <span>& Merged</span>', matrix: 'Past <span>Lectures</span>', devices: 'Device <span>Change Requests</span>' };
   document.getElementById('fac-page-title').innerHTML = titles[tab] || tab;
   if (tab === 'live' && !LOADED_TABS.facLiveSetup) await loadFacultyLiveSetup();
   else if (tab === 'classes' && !LOADED_TABS.facClasses) await loadFacultyClasses(false);
@@ -449,6 +471,7 @@ async function loadFacultyLiveSetup() {
   const clsHtml = FAC_STATE.classes.map(c => `<option value="${c.id}">${c.name} (${c.code})</option>`).join('');
   document.getElementById('fac-start-class').innerHTML = clsHtml;
   document.getElementById('fac-merge-classes').innerHTML = clsHtml;
+  document.getElementById('fac-merge-classes').selectedIndex = -1;
   document.getElementById('fac-start-subject').innerHTML = FAC_STATE.subjects.map(s => `<option value="${s.id}">${s.name} (${s.code})</option>`).join('');
 }
 
@@ -472,6 +495,30 @@ async function loadFacultyClasses(force = false) {
   `).join('') : '<p style="color:var(--text-mute);">No timetable slots assigned yet.</p>';
 }
 
+async function loadFacultyDeviceRequests() {
+  const box = document.getElementById('fac-dev-list');
+  box.innerHTML = '<p style="color:var(--text-mute);font-size:0.82rem;">Loading pending requests...</p>';
+  const res = await api('faculty_device_requests');
+  if (!res.ok) return toast(res.error, true);
+  const list = res.device_requests || [];
+  box.innerHTML = list.length ? list.map(r => `
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding:12px;border-radius:10px;background:var(--bg-3);border:1px solid var(--border);">
+      <div><strong>${r.student_name}</strong> (${r.roll_no}) · ${r.classes?.code || ''} · "${r.reason || '-'}" · <code class="mono">${r.new_device_fp}</code></div>
+      <div style="display:flex;gap:8px;">
+        <button type="button" onclick="reviewFacultyDeviceReq('${r.id}','APPROVED')" class="btn btn-green">Approve</button>
+        <button type="button" onclick="reviewFacultyDeviceReq('${r.id}','REJECTED')" class="btn btn-danger">Reject</button>
+      </div>
+    </div>
+  `).join('') : '<p style="color:var(--text-mute);font-size:0.82rem;">No pending device requests.</p>';
+}
+
+async function reviewFacultyDeviceReq(id, decision) {
+  const r = await api('faculty_review_device_req', { request_id: id, decision });
+  if (!r.ok) return toast(r.error, true);
+  toast(`Device request ${decision.toLowerCase()}.`);
+  await loadFacultyDeviceRequests();
+}
+
 async function startSessionFromSlotById(slotId) {
   const sl = (FAC_STATE.slots || []).find(x => x.id === slotId);
   if (!sl) return;
@@ -481,11 +528,14 @@ async function startSessionFromSlotById(slotId) {
     slot_id: sl.id, slot_start_time: sl.start_time, slot_end_time: sl.end_time, session_type: 'REGULAR'
   });
   if (!res.ok) return toast(res.error, true);
-  toast('Lecture QR started!');
+  toast(res.resumed ? 'Resumed existing lecture — Update Attendance mode!' : 'Lecture QR started!');
   await openSessionMonitor(res.session.id, 'fac');
 }
 
 async function startFacultyLecture(sessionType) {
+  if (STARTING_SESSION) return;
+  STARTING_SESSION = true;
+  try {
   const primaryClass = document.getElementById('fac-start-class').value;
   const merged = [...document.getElementById('fac-merge-classes').selectedOptions].map(o => o.value);
   const res = await api('start_session', {
@@ -493,8 +543,9 @@ async function startFacultyLecture(sessionType) {
     subject_id: document.getElementById('fac-start-subject').value, session_type: sessionType
   });
   if (!res.ok) return toast(res.error, true);
-  toast(`${sessionType} session started!`);
+  toast(res.resumed ? 'Resumed existing lecture — Update Attendance mode!' : `${sessionType} session started!`);
   await openSessionMonitor(res.session.id, 'fac');
+  } finally { STARTING_SESSION = false; }
 }
 
 async function toggleFacultyGeo() {
@@ -553,6 +604,9 @@ function renderQrElement(containerId, sessionId, nonce, size = 196) {
 async function openSessionMonitor(sessionId, mode) {
   clearSessionLoops();
   QR_PAUSED = false;
+  LAST_RENDERED_NONCE = '';
+  LAST_FAC_ROSTER_SIG = '';
+  LAST_CR_ROSTER_SIG = '';
   await refreshSessionMonitorData(sessionId, mode);
   CLOCK_TIMER = setInterval(() => {
     const nowStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST';
@@ -562,16 +616,65 @@ async function openSessionMonitor(sessionId, mode) {
     if (pClock) pClock.textContent = nowStr;
   }, 1000);
   QR_ROTATE_TIMER = setInterval(async () => {
-    if (QR_PAUSED) return;
+    if (QR_PAUSED || document.hidden) return;
     const r = await api('rotate_nonce', { session_id: sessionId });
     if (r.ok) {
+      LAST_RENDERED_NONCE = `${sessionId}:${r.nonce}`;
       renderQrElement(mode === 'cr' ? 'cr-qr-box' : 'fac-qr-box', sessionId, r.nonce);
       if (!document.getElementById('modal-projector').classList.contains('hidden')) {
         renderQrElement('proj-qr-box', sessionId, r.nonce, 300);
       }
     }
   }, (Number(SETTINGS.qr_interval_seconds) || 15) * 1000);
-  ROSTER_POLL_TIMER = setInterval(() => refreshSessionMonitorData(sessionId, mode), 4000);
+  const pollMs = Math.max(2, Number(SETTINGS.poll_interval_seconds) || 4) * 1000;
+  ROSTER_POLL_TIMER = setInterval(() => {
+    if (!document.hidden) pollSessionScansOnly(sessionId, mode);
+  }, pollMs);
+}
+
+async function pollSessionScansOnly(sessionId, mode) {
+  const res = await api('session_scans', { session_id: sessionId });
+  if (!res.ok) return;
+  const recMap = Object.fromEntries((res.records || []).map(r => [r.student_id, r]));
+  const stateObj = mode === 'cr' ? CR_STATE : FAC_STATE;
+  if (!stateObj.liveSession || stateObj.liveSession.id !== sessionId) return;
+
+  stateObj.liveSession.is_active = res.session.is_active;
+  stateObj.liveSession.manual_headcount = res.session.manual_headcount;
+
+  const updatedRoster = (stateObj.roster || []).map(st => ({
+    ...st,
+    status: recMap[st.id]?.status || 'A',
+    marked_via: recMap[st.id]?.marked_via || null
+  }));
+  stateObj.roster = updatedRoster;
+  const qrCount = updatedRoster.filter(r => r.status === 'P' && r.marked_via === 'QR').length;
+  stateObj.qrCount = qrCount;
+  const scannedCount = updatedRoster.filter(r => r.status === 'P' || r.status === 'OD').length;
+  const sig = updatedRoster.map(r => `${r.id}:${r.status}:${r.marked_via || ''}`).join('|');
+
+  if (mode === 'cr') {
+    if (sig !== LAST_CR_ROSTER_SIG) {
+      LAST_CR_ROSTER_SIG = sig;
+      document.getElementById('cr-scan-count').textContent = scannedCount;
+      renderGroupedRollPills('cr-roll-pills', updatedRoster);
+    }
+    const hcInp = document.getElementById('cr-headcount-input');
+    updateHeadcountUI('cr', qrCount, hcInp ? hcInp.value : res.session.manual_headcount);
+    const markBtn = document.getElementById('btn-cr-mark-self');
+    const selfDone = updatedRoster.some(r => r.id === CURRENT_USER?.id && (r.status === 'P' || r.status === 'OD'));
+    markBtn.disabled = !(res.session.is_active && qrCount >= 2 && !selfDone);
+    markBtn.textContent = selfDone ? 'My Attendance Marked ✓' : (qrCount < 2 ? `Mark My Attendance (Need ${2 - qrCount} QR scans)` : 'Mark My Attendance');
+  } else {
+    if (sig !== LAST_FAC_ROSTER_SIG) {
+      LAST_FAC_ROSTER_SIG = sig;
+      document.getElementById('fac-scan-count').textContent = scannedCount;
+      renderGroupedRollPills('fac-roll-pills', updatedRoster);
+      renderLiveRoster();
+    }
+    const hcInp = document.getElementById('fac-headcount-input');
+    updateHeadcountUI('fac', qrCount, hcInp ? hcInp.value : res.session.manual_headcount);
+  }
 }
 
 async function refreshSessionMonitorData(sessionId, mode) {
@@ -585,9 +688,16 @@ async function refreshSessionMonitorData(sessionId, mode) {
     document.getElementById('cr-live-panel').classList.remove('hidden');
     document.getElementById('cr-live-code').textContent = s.session_code;
     document.getElementById('cr-live-title').textContent = `${s.subject_name} · ${s.class_label}`;
-    renderQrElement('cr-qr-box', s.id, s.current_nonce);
-    document.getElementById('cr-scan-count').textContent = scannedCount;
-    renderGroupedRollPills('cr-roll-pills', roster);
+    if (LAST_RENDERED_NONCE !== `${s.id}:${s.current_nonce}`) {
+      LAST_RENDERED_NONCE = `${s.id}:${s.current_nonce}`;
+      renderQrElement('cr-qr-box', s.id, s.current_nonce);
+    }
+    const crSig = roster.map(r => `${r.id}:${r.status}:${r.marked_via || ''}`).join('|');
+    if (crSig !== LAST_CR_ROSTER_SIG) {
+      LAST_CR_ROSTER_SIG = crSig;
+      document.getElementById('cr-scan-count').textContent = scannedCount;
+      renderGroupedRollPills('cr-roll-pills', roster);
+    }
 
     const hcInp = document.getElementById('cr-headcount-input');
     if (hcInp && document.activeElement !== hcInp && s.manual_headcount != null) hcInp.value = s.manual_headcount;
@@ -603,14 +713,21 @@ async function refreshSessionMonitorData(sessionId, mode) {
     document.getElementById('fac-live-code').textContent = s.session_code;
     document.getElementById('fac-live-title').textContent = `${s.subject_name} (${s.subject_code}) · ${s.class_label}`;
     document.getElementById('fac-geo-toggle').checked = s.geofence_override === true || (s.geofence_override === null && Boolean(SETTINGS.geofence_enabled));
-    renderQrElement('fac-qr-box', s.id, s.current_nonce);
-    document.getElementById('fac-scan-count').textContent = scannedCount;
-    renderGroupedRollPills('fac-roll-pills', roster);
+    if (LAST_RENDERED_NONCE !== `${s.id}:${s.current_nonce}`) {
+      LAST_RENDERED_NONCE = `${s.id}:${s.current_nonce}`;
+      renderQrElement('fac-qr-box', s.id, s.current_nonce);
+    }
+    const facSig = roster.map(r => `${r.id}:${r.status}:${r.marked_via || ''}`).join('|');
+    if (facSig !== LAST_FAC_ROSTER_SIG) {
+      LAST_FAC_ROSTER_SIG = facSig;
+      document.getElementById('fac-scan-count').textContent = scannedCount;
+      renderGroupedRollPills('fac-roll-pills', roster);
+      renderLiveRoster();
+    }
 
     const hcInp = document.getElementById('fac-headcount-input');
     if (hcInp && document.activeElement !== hcInp && s.manual_headcount != null) hcInp.value = s.manual_headcount;
     updateHeadcountUI('fac', qrCount, hcInp ? hcInp.value : s.manual_headcount);
-    renderLiveRoster();
   }
 }
 
@@ -652,9 +769,23 @@ function renderLiveRoster() {
 
 async function onFacultyManualTick(studentId, targetStatus, checked) {
   if (!FAC_STATE.liveSession) return;
-  const r = await api('set_student_tick', { session_id: FAC_STATE.liveSession.id, student_id: studentId, status: checked ? targetStatus : 'A' });
-  if (!r.ok) return toast(r.error, true);
-  await refreshSessionMonitorData(FAC_STATE.liveSession.id, 'fac');
+  const nextStatus = checked ? targetStatus : 'A';
+  const row = (FAC_STATE.roster || []).find(st => st.id === studentId);
+  const prevStatus = row ? row.status : 'A';
+  const prevVia = row ? row.marked_via : null;
+  if (row) {
+    row.status = nextStatus;
+    row.marked_via = nextStatus === 'A' ? null : 'MANUAL';
+    LAST_FAC_ROSTER_SIG = FAC_STATE.roster.map(r => `${r.id}:${r.status}:${r.marked_via || ''}`).join('|');
+    document.getElementById('fac-scan-count').textContent = FAC_STATE.roster.filter(r => r.status === 'P' || r.status === 'OD').length;
+    renderGroupedRollPills('fac-roll-pills', FAC_STATE.roster);
+    renderLiveRoster();
+  }
+  const r = await api('set_student_tick', { session_id: FAC_STATE.liveSession.id, student_id: studentId, status: nextStatus });
+  if (!r.ok) {
+    if (row) { row.status = prevStatus; row.marked_via = prevVia; renderGroupedRollPills('fac-roll-pills', FAC_STATE.roster); renderLiveRoster(); }
+    return toast(r.error, true);
+  }
 }
 
 async function closeActiveSession() {
@@ -671,13 +802,13 @@ async function closeActiveSession() {
 // ================= ADMIN PORTAL (LAZY TABS) =================
 async function switchAdminTab(tab) {
   CURRENT_ADMIN_TAB = tab;
-  ['dashboard', 'users', 'academics', 'sessions', 'export', 'devices', 'settings'].forEach(t => document.getElementById(`adm-tab-${t}`).classList.toggle('active', t === tab));
+  ['dashboard', 'users', 'academics', 'sessions', 'export', 'devices', 'performance', 'settings'].forEach(t => document.getElementById(`adm-tab-${t}`).classList.toggle('active', t === tab));
   document.querySelectorAll('[data-adm-tab]').forEach(b => b.classList.toggle('active', b.dataset.admTab === tab));
   document.getElementById('adm-sidebar').classList.remove('open');
   const titles = {
     dashboard: 'Dashboard <span>Overview</span>', users: 'Users, CRs <span>& Bulk CSV</span>',
     academics: 'Classes <span>& Timetable Matrix</span>', sessions: 'Live Sessions <span>& Proxy</span>',
-    export: 'Export <span>Attendance Reports</span>', devices: 'Devices <span>& Audit Logs</span>', settings: 'System <span>Settings & Geofence</span>'
+    export: 'Export <span>Attendance Reports</span>', devices: 'Devices <span>& Audit Logs</span>', performance: 'Performance <span>& Timers</span>', settings: 'System <span>Settings & Geofence</span>'
   };
   document.getElementById('adm-page-title').innerHTML = titles[tab] || tab;
   if (tab === 'dashboard' && !LOADED_TABS.admDashboard) await loadAdminDashboard(false);
@@ -686,6 +817,7 @@ async function switchAdminTab(tab) {
   else if (tab === 'sessions' && !LOADED_TABS.admSessions) await loadAdminSessions(false);
   else if (tab === 'export' && !LOADED_TABS.admExport) await loadAdminExportSetup();
   else if (tab === 'devices' && !LOADED_TABS.admDevices) await loadAdminDevicesLogs(false);
+  else if (tab === 'performance') { populateAdminPerformanceForm(); }
   else if (tab === 'settings') { populateAdminSettingsForm(); loadClassGeoList(); }
 }
 
@@ -870,13 +1002,39 @@ function loadCsvIntoTextarea(e, targetId) {
   reader.onload = ev => { document.getElementById(targetId).value = ev.target.result; };
   reader.readAsText(f);
 }
+function parseCsvRow(line) {
+  const out = [];
+  let cur = '';
+  let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === ',' && !inQ) {
+      out.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur.trim());
+  return out;
+}
 function parseCsvLines(text) {
-  return String(text || '').split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.toLowerCase().startsWith('role,') && !l.toLowerCase().startsWith('class_code,'));
+  return String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).map(l => l.trim()).filter(l => {
+    if (!l) return false;
+    const first = parseCsvRow(l)[0]?.toLowerCase() || '';
+    return first !== 'role' && first !== 'class_code';
+  });
 }
 function downloadCsvFile(filename, rows) {
-  const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const csv = rows.map(r => r.map(v => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }).join(',')).join('\n');
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  a.href = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' }));
   a.download = filename; a.click();
 }
 function downloadSampleUsersCsv() {
@@ -890,14 +1048,14 @@ function downloadSampleUsersCsv() {
 function downloadSampleTtCsv() {
   downloadCsvFile('sample_timetable_v8.csv', [
     ['class_code', 'subject_code', 'faculty_email', 'day_of_week', 'start_time', 'end_time'],
-    ['CLS-001', 'SUB-001', 'sharma@college.edu', '1', '09:00', '10:00'],
-    ['CLS-001+CLS-002', 'SUB-002', 'sharma@college.edu', '2', '10:00', '11:00']
+    ['CLS-001', 'SUB-001', 'sharma@college.edu', 'Monday', '09:00', '10:00'],
+    ['CLS-001+CLS-002', 'SUB-002', 'sharma@college.edu', 'Tuesday', '10:00', '11:00']
   ]);
 }
 async function submitBulkUsers() {
   const lines = parseCsvLines(document.getElementById('bulk-users-csv').value);
   const rows = lines.map(line => {
-    const [role, enrollment_no, roll_no, full_name, email, class_code, password] = line.split(',').map(s => (s || '').trim());
+    const [role, enrollment_no, roll_no, full_name, email, class_code, password] = parseCsvRow(line);
     return { role, enrollment_no, roll_no, full_name, email, class_code, password };
   });
   const res = await api('admin_bulk_import_users', { rows });
@@ -909,13 +1067,14 @@ async function submitBulkUsers() {
 async function submitBulkTimetable() {
   const lines = parseCsvLines(document.getElementById('bulk-tt-csv').value);
   const rows = lines.map(line => {
-    const [class_code, subject_code, faculty_email, day_of_week, start_time, end_time] = line.split(',').map(s => (s || '').trim());
+    const [class_code, subject_code, faculty_email, day_of_week, start_time, end_time] = parseCsvRow(line);
     return { class_code, subject_code, faculty_email, day_of_week, start_time, end_time };
   });
   const res = await api('admin_bulk_import_timetable', { rows });
   if (!res.ok) return toast(res.error, true);
   closeModal('modal-bulk-tt');
-  toast(`Imported ${res.imported} timetable slots!` + (res.errors?.length ? ` (${res.errors.length} skipped)` : ''));
+  const autoNote = (res.created_classes || res.created_subjects) ? ` (Auto-created ${res.created_classes || 0} classes, ${res.created_subjects || 0} subjects)` : '';
+  toast(`Imported ${res.imported} slots!${autoNote}` + (res.errors?.length ? ` (${res.errors.length} skipped)` : ''));
   await loadAdminAcademics(true);
 }
 
@@ -949,6 +1108,7 @@ async function loadAdminAcademics(force = false) {
   document.getElementById('tt-subject').innerHTML = ADM_STATE.subjects.map(s => `<option value="${s.id}">${s.name} (${s.code})</option>`).join('');
   document.getElementById('tt-faculty').innerHTML = ADM_STATE.faculty.map(f => `<option value="${f.id}">${f.faculty_code ? '[' + f.faculty_code + '] ' : ''}${f.full_name}</option>`).join('');
   document.getElementById('tt-merged-classes').innerHTML = ADM_STATE.classes.map(c => `<option value="${c.id}">${c.code} - ${c.name}</option>`).join('');
+  document.getElementById('tt-merged-classes').selectedIndex = -1;
   renderTimetableMatrix();
 }
 
@@ -1148,7 +1308,7 @@ async function loadAdminDevicesLogs(force = false) {
     </div>
   `).join('') : '<p style="color:var(--text-mute);font-size:0.82rem;">No pending device requests.</p>';
   document.getElementById('adm-logs-list').innerHTML = (res.logs || []).length ? res.logs.map(l => `
-    <div style="padding:8px 10px;border-radius:8px;background:var(--bg-3);border:1px solid var(--border-2);"><strong style="color:var(--accent);">[${l.event_type}]</strong> ${l.details || ''}</div>
+    <div style="padding:8px 10px;border-radius:8px;background:var(--bg-3);border:1px solid var(--border-2);display:flex;justify-content:space-between;gap:10px;"><div><strong style="color:var(--accent);">[${l.event_type}]</strong> ${l.details || ''}</div><span style="color:var(--text-mute);font-size:0.7rem;white-space:nowrap;">${l.created_at ? new Date(l.created_at).toLocaleString() : ''}</span></div>
   `).join('') : '<p style="color:var(--text-mute);">No logs yet.</p>';
 }
 
@@ -1166,6 +1326,28 @@ function fillCurrentGps(latId, lngId) {
     document.getElementById(lngId).value = pos.coords.longitude.toFixed(6);
     toast('Current GPS coordinates captured!');
   }, () => toast('Location permission denied.', true), { enableHighAccuracy: true, timeout: 8000 });
+}
+
+function populateAdminPerformanceForm() {
+  const qSec = SETTINGS.qr_interval_seconds || 15;
+  const pSec = SETTINGS.poll_interval_seconds || 4;
+  document.getElementById('perf-qr-timer').value = qSec;
+  document.getElementById('perf-qr-val').textContent = qSec + 's';
+  document.getElementById('perf-poll-timer').value = pSec;
+  document.getElementById('perf-poll-val').textContent = pSec + 's';
+  document.getElementById('perf-sess-timeout').value = SETTINGS.session_timeout_minutes || 60;
+}
+
+async function saveAdminPerformance() {
+  const patch = {
+    qr_interval_seconds: Number(document.getElementById('perf-qr-timer').value) || 15,
+    poll_interval_seconds: Number(document.getElementById('perf-poll-timer').value) || 4,
+    session_timeout_minutes: Number(document.getElementById('perf-sess-timeout').value) || 60
+  };
+  const r = await api('admin_save_settings', { patch });
+  if (!r.ok) return toast(r.error, true);
+  SETTINGS = { ...SETTINGS, ...patch };
+  toast(`Saved! QR: ${patch.qr_interval_seconds}s · Poll: ${patch.poll_interval_seconds}s`);
 }
 
 function populateAdminSettingsForm() {

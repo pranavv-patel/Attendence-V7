@@ -7,9 +7,55 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'smartqr-v8-production-secr
 
 function cleanNullableText(val, { lower = false } = {}) {
   if (val === undefined || val === null) return null;
-  const trimmed = String(val).trim();
+  let trimmed = String(val).replace(/^\uFEFF/, '').trim();
+  if (trimmed.length >= 2 && ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))) {
+    trimmed = trimmed.slice(1, -1).replace(/""/g, '"').trim();
+  }
   if (!trimmed) return null;
   return lower ? trimmed.toLowerCase() : trimmed;
+}
+
+async function logAudit(eventType, actorId, details) {
+  try {
+    await sbFetch('audit_logs', {
+      method: 'POST',
+      body: JSON.stringify({
+        event_type: String(eventType || 'INFO').slice(0, 50),
+        actor_id: actorId || null,
+        details: String(details || '').slice(0, 500)
+      })
+    });
+  } catch {}
+}
+
+function parseDayOfWeek(val) {
+  const s = String(val ?? '').trim().toLowerCase();
+  const map = {
+    '0': 0, 'sun': 0, 'sunday': 0,
+    '1': 1, 'mon': 1, 'monday': 1,
+    '2': 2, 'tue': 2, 'tues': 2, 'tuesday': 2,
+    '3': 3, 'wed': 3, 'wednesday': 3,
+    '4': 4, 'thu': 4, 'thur': 4, 'thurs': 4, 'thursday': 4,
+    '5': 5, 'fri': 5, 'friday': 5,
+    '6': 6, 'sat': 6, 'saturday': 6
+  };
+  return map[s] !== undefined ? map[s] : 1;
+}
+
+function normalizeTimeHHMM(val, fallback = '09:00') {
+  const raw = String(val || '').trim().toUpperCase();
+  if (!raw) return fallback;
+  const ampm = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/);
+  if (ampm) {
+    let h = Number(ampm[1]);
+    const m = ampm[2];
+    if (ampm[3] === 'PM' && h < 12) h += 12;
+    if (ampm[3] === 'AM' && h === 12) h = 0;
+    return `${String(h).padStart(2, '0')}:${m}`;
+  }
+  const hm = raw.match(/^(\d{1,2}):(\d{2})/);
+  if (hm) return `${String(Number(hm[1])).padStart(2, '0')}:${hm[2]}`;
+  return fallback;
 }
 
 function formatDbError(err, fallback = 'Database operation failed.') {
@@ -198,6 +244,28 @@ module.exports = async (req, res) => {
     const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
     const action = req.query.action || body.action;
 
+        // Combined lightweight startup (settings + whoami in 1 request)
+    if (action === 'init') {
+      const sess = getSession(req);
+      const [setRows, userRows] = await Promise.all([
+        sbFetch('system_settings?id=eq.1&select=*'),
+        sess ? sbFetch(`users?id=eq.${sess.id}&select=id,role,faculty_code,email,enrollment_no,roll_no,full_name,class_id,device_fp,is_super_admin,admin_permissions,faculty_permissions,classes(id,name,code)`) : Promise.resolve([])
+      ]);
+      const s = setRows[0] || {};
+      const dbEmail = (s.smtp_email || '').trim();
+      const dbPass = (s.smtp_app_password || '').trim();
+      const envEmail = (process.env.SMTP_EMAIL || '').trim();
+      const envPass = (process.env.SMTP_APP_PASSWORD || '').trim();
+      delete s.smtp_app_password;
+      s.smtp_configured = Boolean((dbEmail && dbPass) || (envEmail && envPass));
+      if (!sess || sess.role !== 'admin') {
+        delete s.campus_lat;
+        delete s.campus_lng;
+        delete s.smtp_email;
+      }
+      return res.json({ ok: true, settings: s, user: userRows[0] || null });
+    }
+
     // Lightweight startup settings
     if (action === 'get_settings') {
       const rows = await sbFetch('system_settings?id=eq.1&select=*');
@@ -245,25 +313,13 @@ module.exports = async (req, res) => {
       }
 
       const u = authRes.user;
-      if ((u.role === 'student' || u.role === 'cr') && deviceFp) {
-        if (!u.device_fp) {
-          await sbFetch(`users?id=eq.${u.id}`, { method: 'PATCH', body: JSON.stringify({ device_fp: deviceFp }) });
-        } else if (u.device_fp !== deviceFp) {
-          return res.status(403).json({
-            ok: false,
-            error: 'DEVICE_MISMATCH',
-            student_id: u.id,
-            student_name: u.full_name,
-            enrollment_no: u.enrollment_no,
-            roll_no: u.roll_no,
-            class_id: u.class_id,
-            message: 'Account locked to another device. Submit a Device Change Request.'
-          });
-        }
+      if ((u.role === 'student' || u.role === 'cr') && deviceFp && !u.device_fp) {
+        await sbFetch(`users?id=eq.${u.id}`, { method: 'PATCH', body: JSON.stringify({ device_fp: deviceFp }) });
       }
 
       setSessionCookie(res, { id: u.id, role: u.role, email: u.email, full_name: u.full_name });
       const fullRows = await sbFetch(`users?id=eq.${u.id}&select=id,role,faculty_code,email,enrollment_no,roll_no,full_name,class_id,device_fp,is_super_admin,admin_permissions,faculty_permissions,classes(id,name,code)`);
+      await logAudit('LOGIN', u.id, `${u.role.toUpperCase()} login: ${u.full_name}`);
       return res.json({ ok: true, user: fullRows[0] });
     }
 
@@ -399,6 +455,12 @@ module.exports = async (req, res) => {
       const uRows = await sbFetch(`users?id=eq.${sess.id}&select=id,class_id`);
       const cr = uRows[0];
       if (!cr?.class_id) return res.status(400).json({ ok: false, error: 'CR is not assigned to a class.' });
+
+      // Enforce strictly 1 active QR session at a time per faculty
+      await sbFetch(`attendance_sessions?faculty_id=eq.${sess.id}&is_active=eq.true`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_active: false })
+      });
 
       const ist = getISTClock();
       const slotId = cleanNullableText(body.slot_id);
@@ -623,7 +685,33 @@ module.exports = async (req, res) => {
         }
       }
 
+      // Enforce strictly 1 active QR session at a time per faculty
+      await sbFetch(`attendance_sessions?faculty_id=eq.${sess.id}&is_active=eq.true`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_active: false })
+      });
+
       const ist = getISTClock();
+      const slotId = cleanNullableText(body.slot_id);
+      const todayRows = await sbFetch(`attendance_sessions?session_date=eq.${ist.dateStr}&subject_id=eq.${subjectId}&order=created_at.desc&select=*`);
+      const sortedTarget = [...mergedIds].sort().join(',');
+      const existing = (todayRows || []).find(s => {
+        if (slotId && s.slot_id && s.slot_id === slotId) return true;
+        const sIds = normalizeClassIds(s.class_id, s.class_ids).sort().join(',');
+        return sIds === sortedTarget && s.session_type === stype;
+      });
+
+      if (existing) {
+        const nonce = crypto.randomBytes(6).toString('hex');
+        const updated = await sbFetch(`attendance_sessions?id=eq.${existing.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ is_active: true, current_nonce: nonce })
+        });
+        const resumedSess = updated[0] || { ...existing, is_active: true, current_nonce: nonce };
+        await logAudit('SESSION_RESUMED', sess.id, `Resumed ${resumedSess.session_code} for attendance update`);
+        return res.json({ ok: true, session: resumedSess, resumed: true });
+      }
+
       const sCode = await nextSessionCode(ist.dateStr);
       const nonce = crypto.randomBytes(6).toString('hex');
       const created = await sbFetch('attendance_sessions', {
@@ -634,7 +722,7 @@ module.exports = async (req, res) => {
           class_ids: mergedIds,
           subject_id: subjectId,
           faculty_id: sess.id,
-          slot_id: cleanNullableText(body.slot_id),
+          slot_id: slotId,
           slot_start_time: cleanNullableText(body.slot_start_time),
           slot_end_time: cleanNullableText(body.slot_end_time),
           session_date: ist.dateStr,
@@ -645,7 +733,8 @@ module.exports = async (req, res) => {
         })
       });
 
-      return res.json({ ok: true, session: created[0] });
+      await logAudit('SESSION_STARTED', sess.id, `Started ${sCode} (${stype}) for ${mergedIds.length} class(es)`);
+      return res.json({ ok: true, session: created[0], resumed: false });
     }
 
     if (action === 'toggle_session_geo') {
@@ -673,6 +762,52 @@ module.exports = async (req, res) => {
         body: JSON.stringify({ current_nonce: nonce })
       });
       return res.json({ ok: true, nonce });
+    }
+
+        // Ultra-lightweight live scan polling (fetches ONLY attendance_records + session status)
+    if (action === 'session_scans') {
+      const sess = requireRole(req, res, ['cr', 'faculty', 'admin']);
+      if (!sess) return;
+      const sessionId = cleanNullableText(body.session_id);
+      if (!sessionId) return res.status(400).json({ ok: false, error: 'Missing session_id.' });
+      const [sRows, records] = await Promise.all([
+        sbFetch(`attendance_sessions?id=eq.${sessionId}&select=id,is_active,current_nonce,manual_headcount`),
+        sbFetch(`attendance_records?session_id=eq.${sessionId}&select=student_id,status,marked_via`)
+      ]);
+      if (!sRows[0]) return res.status(404).json({ ok: false, error: 'Session not found.' });
+      return res.json({ ok: true, session: sRows[0], records: records || [] });
+    }
+
+    // Faculty Device Change Requests (on-demand refresh only)
+    if (action === 'faculty_device_requests') {
+      const sess = requireRole(req, res, ['faculty', 'admin']);
+      if (!sess) return;
+      const reqs = await sbFetch('device_change_requests?status=eq.PENDING&order=created_at.desc&select=*,classes(name,code)');
+      return res.json({ ok: true, device_requests: reqs || [] });
+    }
+
+    if (action === 'faculty_review_device_req') {
+      const sess = requireRole(req, res, ['faculty', 'admin']);
+      if (!sess) return;
+      const { request_id, decision } = body;
+      if (!['APPROVED', 'REJECTED'].includes(decision)) {
+        return res.status(400).json({ ok: false, error: 'Invalid decision.' });
+      }
+      const reqRows = await sbFetch(`device_change_requests?id=eq.${request_id}&select=*`);
+      const reqItem = reqRows[0];
+      if (!reqItem) return res.status(404).json({ ok: false, error: 'Request not found.' });
+      if (decision === 'APPROVED') {
+        await sbFetch(`users?id=eq.${reqItem.student_id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ device_fp: reqItem.new_device_fp })
+        });
+      }
+      await sbFetch(`device_change_requests?id=eq.${request_id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: decision, reviewed_by: sess.id, reviewed_at: new Date().toISOString() })
+      });
+      await logAudit('FACULTY_DEVICE_' + decision, sess.id, `${decision} device request for ${reqItem.student_name} (${reqItem.roll_no})`);
+      return res.json({ ok: true });
     }
 
     // Live Session Roster (supports single & merged classes + headcount stats)
@@ -765,6 +900,7 @@ module.exports = async (req, res) => {
         method: 'PATCH',
         body: JSON.stringify({ is_active: false })
       });
+      await logAudit('SESSION_CLOSED', sess.id, `Closed session ${body.session_id}`);
       return res.json({ ok: true });
     }
 
@@ -1090,6 +1226,7 @@ module.exports = async (req, res) => {
           errors.push(`Row ${i + 1} (${r.full_name || r.enrollment_no || r.email}): ${formatDbError(e)}`);
         }
       }
+      await logAudit('BULK_IMPORT_USERS', admin.id, `Imported ${imported} users (${errors.length} skipped)`);
       return res.json({ ok: true, imported, errors });
     }
 
@@ -1236,28 +1373,70 @@ module.exports = async (req, res) => {
       let imported = 0;
       const errors = [];
 
+      let createdClasses = 0;
+      let createdSubjects = 0;
+
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
-        const rawClsTokens = String(r.class_code || '').split(/[+|;]/).map(s => s.trim().toLowerCase()).filter(Boolean);
-        const cIds = [...new Set(rawClsTokens.map(tok => clsMap[tok]).filter(Boolean))];
-        const sId = subMap[(r.subject_code || '').toLowerCase().trim()];
-        const fId = facMap[(r.faculty_email || r.faculty_code || '').toLowerCase().trim()];
+        const rawClsStr = cleanNullableText(r.class_code) || '';
+        const rawClsTokens = rawClsStr.split(/[+|;]/).map(s => cleanNullableText(s)).filter(Boolean);
+        const cIds = [];
 
-        if (!cIds.length || !sId || !fId) {
-          errors.push(`Row ${i + 1}: Could not match Class '${r.class_code}', Subject '${r.subject_code}', or Faculty '${r.faculty_email || r.faculty_code}'.`);
+        for (const tok of rawClsTokens) {
+          const key = tok.toLowerCase();
+          if (clsMap[key]) {
+            cIds.push(clsMap[key]);
+          } else {
+            const newCode = tok.toUpperCase().replace(/\s+/g, '-').slice(0, 24);
+            const createdCls = await sbFetch('classes', {
+              method: 'POST',
+              body: JSON.stringify({ name: tok, code: newCode, semester: '' })
+            });
+            if (createdCls?.[0]?.id) {
+              clsMap[key] = createdCls[0].id;
+              clsMap[newCode.toLowerCase()] = createdCls[0].id;
+              cIds.push(createdCls[0].id);
+              createdClasses++;
+            }
+          }
+        }
+
+        const uniqueCIds = [...new Set(cIds)];
+        const rawSub = cleanNullableText(r.subject_code) || '';
+        let sId = rawSub ? subMap[rawSub.toLowerCase()] : null;
+        if (!sId && rawSub) {
+          const newSubCode = rawSub.toUpperCase().replace(/\s+/g, '-').slice(0, 24);
+          const subName = cleanNullableText(r.subject_name) || rawSub;
+          const createdSub = await sbFetch('subjects', {
+            method: 'POST',
+            body: JSON.stringify({ name: subName, code: newSubCode })
+          });
+          if (createdSub?.[0]?.id) {
+            sId = createdSub[0].id;
+            subMap[rawSub.toLowerCase()] = sId;
+            subMap[newSubCode.toLowerCase()] = sId;
+            createdSubjects++;
+          }
+        }
+
+        const facKey = (cleanNullableText(r.faculty_email, { lower: true }) || cleanNullableText(r.faculty_code, { lower: true }) || '');
+        const fId = facKey ? facMap[facKey] : null;
+
+        if (!uniqueCIds.length || !sId || !fId) {
+          errors.push(`Row ${i + 1}: Missing Class '${rawClsStr}', Subject '${rawSub}', or Faculty '${facKey}'.`);
           continue;
         }
 
         await sbFetch('timetable_slots', {
           method: 'POST',
           body: JSON.stringify({
-            class_id: cIds[0],
-            class_ids: cIds,
+            class_id: uniqueCIds[0],
+            class_ids: uniqueCIds,
             subject_id: sId,
             faculty_id: fId,
-            day_of_week: Number(r.day_of_week ?? 1),
-            start_time: r.start_time || '09:00',
-            end_time: r.end_time || '10:00',
+            day_of_week: parseDayOfWeek(r.day_of_week),
+            start_time: normalizeTimeHHMM(r.start_time, '09:00'),
+            end_time: normalizeTimeHHMM(r.end_time, '10:00'),
             version_no: 1,
             is_current: true,
             effective_from: ist.dateStr
@@ -1266,13 +1445,15 @@ module.exports = async (req, res) => {
         imported++;
       }
 
-      return res.json({ ok: true, imported, errors });
+      await logAudit('BULK_IMPORT_TIMETABLE', admin.id, `Imported ${imported} slots (Auto-created ${createdClasses} classes, ${createdSubjects} subjects)`);
+      return res.json({ ok: true, imported, created_classes: createdClasses, created_subjects: createdSubjects, errors });
     }
 
     if (action === 'admin_save_settings') {
       const admin = await requireAdminPerm(req, res, 'manage_settings');
       if (!admin) return;
       const r = await sbRpc('rpc_update_settings_v8', { p_patch: body.patch || {} });
+      await logAudit('SETTINGS_UPDATED', admin.id, `Updated system settings (QR Timer: ${body.patch?.qr_interval_seconds || '-'}s)`);
       return res.json(r);
     }
 
@@ -1363,6 +1544,7 @@ module.exports = async (req, res) => {
         method: 'PATCH',
         body: JSON.stringify({ status: decision, reviewed_by: admin.id, reviewed_at: new Date().toISOString() })
       });
+      await logAudit('DEVICE_' + decision, admin.id, `${decision} device request for ${reqItem.student_name} (${reqItem.roll_no})`);
       return res.json({ ok: true });
     }
 

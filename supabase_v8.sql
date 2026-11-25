@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
   primary_color TEXT DEFAULT '#38bdf8',
   default_theme TEXT DEFAULT 'dark',
   qr_interval_seconds INT DEFAULT 15,
+  poll_interval_seconds INT DEFAULT 4,
   session_timeout_minutes INT DEFAULT 60,
   enforce_lecture_time BOOLEAN DEFAULT FALSE,
   allow_extra_lectures BOOLEAN DEFAULT TRUE,
@@ -171,7 +172,8 @@ ALTER TABLE system_settings
   ADD COLUMN IF NOT EXISTS logo_url TEXT DEFAULT 'assets/logo.png',
   ADD COLUMN IF NOT EXISTS smtp_email TEXT DEFAULT '',
   ADD COLUMN IF NOT EXISTS smtp_app_password TEXT DEFAULT '',
-  ADD COLUMN IF NOT EXISTS allow_extra_lectures BOOLEAN DEFAULT TRUE;
+  ADD COLUMN IF NOT EXISTS allow_extra_lectures BOOLEAN DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS poll_interval_seconds INT DEFAULT 4;
 
 ALTER TABLE classes
   ADD COLUMN IF NOT EXISTS semester TEXT DEFAULT '';
@@ -566,6 +568,7 @@ BEGIN
       ELSE default_theme
     END,
     qr_interval_seconds = COALESCE((p_patch->>'qr_interval_seconds')::INT, qr_interval_seconds),
+    poll_interval_seconds = COALESCE((p_patch->>'poll_interval_seconds')::INT, poll_interval_seconds),
     session_timeout_minutes = COALESCE((p_patch->>'session_timeout_minutes')::INT, session_timeout_minutes),
     enforce_lecture_time = COALESCE((p_patch->>'enforce_lecture_time')::BOOLEAN, enforce_lecture_time),
     allow_extra_lectures = COALESCE((p_patch->>'allow_extra_lectures')::BOOLEAN, allow_extra_lectures),
@@ -636,3 +639,10 @@ BEGIN
     VALUES ('admin', 'pranavpatel.pps@gmail.com', 'Pranav Patel (Super Admin)', crypt('PPS@2004', gen_salt('bf', 12)), TRUE, TRUE);
   END IF;
 END $$;
+
+-- Performance Indexes for High-Speed Lookups
+CREATE INDEX IF NOT EXISTS idx_att_rec_sess_stu ON attendance_records (session_id, student_id);
+CREATE INDEX IF NOT EXISTS idx_att_sess_date_active ON attendance_sessions (session_date, is_active);
+CREATE INDEX IF NOT EXISTS idx_users_class_role_active ON users (class_id, role, is_active);
+CREATE INDEX IF NOT EXISTS idx_tt_day_current ON timetable_slots (day_of_week, is_current);
+CREATE INDEX IF NOT EXISTS idx_dev_req_status ON device_change_requests (status, created_at DESC);
