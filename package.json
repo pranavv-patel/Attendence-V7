@@ -1,7 +1,7 @@
 {
-  "name": "smartqr-attendance-v7-verified",
-  "version": "7.1.0",
-  "description": "SmartQR Enterprise Attendance System v7.1 - Verified Production Release",
+  "name": "smartqr-attendance-v8",
+  "version": "8.0.0",
+  "description": "SmartQR Enterprise Attendance System v8.0 - Lazy Tabs, CR Role, Headcount Verification, Merged Classes & Timetable Matrix",
   "private": true,
   "dependencies": {
     "nodemailer": "^6.9.15"

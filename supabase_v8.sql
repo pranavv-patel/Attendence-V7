@@ -1,22 +1,19 @@
 -- ============================================================================
--- SMARTQR ATTENDANCE v7.1 VERIFIED PRODUCTION — COMPLETE SCHEMA, RBAC & GRANTS
--- Safe to run on a fresh Supabase project OR upgrade any v5/v6/v7 database.
+-- SMARTQR ATTENDANCE v8.0 PRODUCTION SCHEMA, RBAC, TIMETABLE VERSIONS & RPCS
+-- Safe to run on a fresh Supabase project OR upgrade an existing database.
 -- ============================================================================
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
--- 1. Core Tables
+-- 1. System Settings
 CREATE TABLE IF NOT EXISTS system_settings (
   id INT PRIMARY KEY DEFAULT 1,
   app_title TEXT DEFAULT 'SmartQR Attendance',
   college_name TEXT DEFAULT 'Parul University • FMS',
   login_subtitle TEXT DEFAULT 'Enterprise Anti-Proxy Classroom Attendance',
   logo_url TEXT DEFAULT 'assets/logo.png',
-  primary_color TEXT DEFAULT '#4f46e5',
-  label_student TEXT DEFAULT 'Student',
-  label_faculty TEXT DEFAULT 'Faculty',
-  label_class TEXT DEFAULT 'Class / Division',
-  label_roll TEXT DEFAULT 'Roll No',
+  primary_color TEXT DEFAULT '#38bdf8',
+  default_theme TEXT DEFAULT 'dark',
   qr_interval_seconds INT DEFAULT 15,
   session_timeout_minutes INT DEFAULT 60,
   enforce_lecture_time BOOLEAN DEFAULT FALSE,
@@ -32,10 +29,12 @@ CREATE TABLE IF NOT EXISTS system_settings (
 
 INSERT INTO system_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
+-- 2. Classes (with auto-generated unique code CLS-XXX)
 CREATE TABLE IF NOT EXISTS classes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   code TEXT NOT NULL,
+  semester TEXT DEFAULT '',
   custom_geo_enabled BOOLEAN DEFAULT FALSE,
   custom_lat DOUBLE PRECISION,
   custom_lng DOUBLE PRECISION,
@@ -43,6 +42,7 @@ CREATE TABLE IF NOT EXISTS classes (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 3. Subjects (with auto-generated unique code SUB-XXX)
 CREATE TABLE IF NOT EXISTS subjects (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
@@ -50,9 +50,11 @@ CREATE TABLE IF NOT EXISTS subjects (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 4. Users (student | cr | faculty | admin)
 CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  role TEXT NOT NULL CHECK (role IN ('student', 'faculty', 'admin')),
+  role TEXT NOT NULL CHECK (role IN ('student', 'cr', 'faculty', 'admin')),
+  faculty_code TEXT,
   email TEXT,
   enrollment_no TEXT,
   roll_no TEXT,
@@ -86,31 +88,47 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 5. Timetable Slots (Versioned via version_no & is_current; supports merged classes via class_ids)
 CREATE TABLE IF NOT EXISTS timetable_slots (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  class_ids UUID[] DEFAULT ARRAY[]::UUID[],
   subject_id UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
   faculty_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  day_of_week INT DEFAULT 1,
-  start_time TIME DEFAULT '09:00',
-  end_time TIME DEFAULT '10:00',
+  day_of_week INT NOT NULL DEFAULT 1 CHECK (day_of_week BETWEEN 0 AND 6),
+  start_time TEXT NOT NULL DEFAULT '09:00',
+  end_time TEXT NOT NULL DEFAULT '10:00',
+  version_no INT NOT NULL DEFAULT 1,
+  is_current BOOLEAN NOT NULL DEFAULT TRUE,
+  effective_from DATE NOT NULL DEFAULT CURRENT_DATE,
+  effective_to DATE,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 6. Attendance Sessions (with auto-generated unique session_code SES-YYYYMMDD-XXX, merged class_ids, manual_headcount, and lecture snapshots)
 CREATE TABLE IF NOT EXISTS attendance_sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_code TEXT NOT NULL,
   class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  class_ids UUID[] DEFAULT ARRAY[]::UUID[],
   subject_id UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
   faculty_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  slot_id UUID REFERENCES timetable_slots(id) ON DELETE SET NULL,
+  slot_start_time TEXT,
+  slot_end_time TEXT,
+  timetable_version INT DEFAULT 1,
   session_date DATE DEFAULT CURRENT_DATE,
   current_nonce TEXT NOT NULL,
   is_active BOOLEAN DEFAULT TRUE,
   geofence_override BOOLEAN,
   session_type TEXT DEFAULT 'REGULAR',
+  manual_headcount INT,
+  headcount_updated_at TIMESTAMPTZ,
   assigned_by_admin UUID REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 7. Attendance Records
 CREATE TABLE IF NOT EXISTS attendance_records (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id UUID NOT NULL REFERENCES attendance_sessions(id) ON DELETE CASCADE,
@@ -123,6 +141,7 @@ CREATE TABLE IF NOT EXISTS attendance_records (
   UNIQUE(session_id, student_id)
 );
 
+-- 8. Device Change Requests
 CREATE TABLE IF NOT EXISTS device_change_requests (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   student_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -137,6 +156,7 @@ CREATE TABLE IF NOT EXISTS device_change_requests (
   reviewed_at TIMESTAMPTZ
 );
 
+-- 9. Audit Logs
 CREATE TABLE IF NOT EXISTS audit_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   event_type TEXT NOT NULL,
@@ -145,14 +165,24 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. Safe Column Upgrades for Existing Databases
+-- Safe Column Upgrades for Existing Databases
 ALTER TABLE system_settings
+  ADD COLUMN IF NOT EXISTS default_theme TEXT DEFAULT 'dark',
   ADD COLUMN IF NOT EXISTS logo_url TEXT DEFAULT 'assets/logo.png',
   ADD COLUMN IF NOT EXISTS smtp_email TEXT DEFAULT '',
   ADD COLUMN IF NOT EXISTS smtp_app_password TEXT DEFAULT '',
   ADD COLUMN IF NOT EXISTS allow_extra_lectures BOOLEAN DEFAULT TRUE;
 
+ALTER TABLE classes
+  ADD COLUMN IF NOT EXISTS semester TEXT DEFAULT '';
+
 ALTER TABLE users
+  DROP CONSTRAINT IF EXISTS users_role_check;
+ALTER TABLE users
+  ADD CONSTRAINT users_role_check CHECK (role IN ('student', 'cr', 'faculty', 'admin'));
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS faculty_code TEXT,
   ADD COLUMN IF NOT EXISTS enrollment_no TEXT,
   ADD COLUMN IF NOT EXISTS is_super_admin BOOLEAN DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS admin_permissions JSONB DEFAULT '{
@@ -177,21 +207,45 @@ ALTER TABLE users
 
 UPDATE users SET is_super_admin = TRUE WHERE role = 'admin';
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_enrollment_unique ON users (LOWER(enrollment_no)) WHERE enrollment_no IS NOT NULL AND enrollment_no <> '';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON users (LOWER(email)) WHERE email IS NOT NULL AND email <> '';
+ALTER TABLE timetable_slots
+  ADD COLUMN IF NOT EXISTS class_ids UUID[] DEFAULT ARRAY[]::UUID[],
+  ADD COLUMN IF NOT EXISTS version_no INT NOT NULL DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS is_current BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS effective_from DATE NOT NULL DEFAULT CURRENT_DATE,
+  ADD COLUMN IF NOT EXISTS effective_to DATE;
 
-ALTER TABLE classes
-  ADD COLUMN IF NOT EXISTS custom_geo_enabled BOOLEAN DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS custom_lat DOUBLE PRECISION,
-  ADD COLUMN IF NOT EXISTS custom_lng DOUBLE PRECISION,
-  ADD COLUMN IF NOT EXISTS custom_radius_meters INT DEFAULT 150;
+UPDATE timetable_slots
+SET class_ids = ARRAY[class_id]
+WHERE (class_ids IS NULL OR cardinality(class_ids) = 0) AND class_id IS NOT NULL;
 
 ALTER TABLE attendance_sessions
-  ADD COLUMN IF NOT EXISTS geofence_override BOOLEAN,
-  ADD COLUMN IF NOT EXISTS session_type TEXT DEFAULT 'REGULAR',
-  ADD COLUMN IF NOT EXISTS assigned_by_admin UUID REFERENCES users(id) ON DELETE SET NULL;
+  ADD COLUMN IF NOT EXISTS session_code TEXT,
+  ADD COLUMN IF NOT EXISTS class_ids UUID[] DEFAULT ARRAY[]::UUID[],
+  ADD COLUMN IF NOT EXISTS slot_id UUID REFERENCES timetable_slots(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS slot_start_time TEXT,
+  ADD COLUMN IF NOT EXISTS slot_end_time TEXT,
+  ADD COLUMN IF NOT EXISTS timetable_version INT DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS manual_headcount INT,
+  ADD COLUMN IF NOT EXISTS headcount_updated_at TIMESTAMPTZ;
 
--- 3. Row-Level Security + Explicit service_role Grants
+UPDATE attendance_sessions
+SET class_ids = ARRAY[class_id]
+WHERE (class_ids IS NULL OR cardinality(class_ids) = 0) AND class_id IS NOT NULL;
+
+UPDATE attendance_sessions
+SET session_code = 'SES-' || TO_CHAR(COALESCE(session_date, CURRENT_DATE), 'YYYYMMDD') || '-' || UPPER(SUBSTRING(REPLACE(id::TEXT, '-', ''), 1, 6))
+WHERE session_code IS NULL OR session_code = '';
+
+ALTER TABLE attendance_sessions
+  ALTER COLUMN session_code SET NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_enrollment_unique ON users (LOWER(enrollment_no)) WHERE enrollment_no IS NOT NULL AND enrollment_no <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON users (LOWER(email)) WHERE email IS NOT NULL AND email <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_classes_code_unique ON classes (LOWER(code)) WHERE code IS NOT NULL AND code <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_code_unique ON subjects (LOWER(code)) WHERE code IS NOT NULL AND code <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_code_unique ON attendance_sessions (LOWER(session_code));
+
+-- Enable RLS & Grants for service_role
 ALTER TABLE system_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE classes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE subjects ENABLE ROW LEVEL SECURITY;
@@ -208,7 +262,59 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO service_role;
 
--- 4. RPC Functions
+-- Auto-Code Generators
+CREATE OR REPLACE FUNCTION generate_next_code(p_prefix TEXT, p_table TEXT, p_col TEXT)
+RETURNS TEXT LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_count INT;
+  v_num INT;
+  v_candidate TEXT;
+BEGIN
+  IF p_table = 'classes' THEN
+    SELECT COUNT(*) INTO v_count FROM classes;
+  ELSIF p_table = 'subjects' THEN
+    SELECT COUNT(*) INTO v_count FROM subjects;
+  ELSIF p_table = 'users' THEN
+    SELECT COUNT(*) INTO v_count FROM users WHERE role = 'faculty';
+  ELSE
+    v_count := 0;
+  END IF;
+
+  v_num := v_count + 1;
+  LOOP
+    v_candidate := p_prefix || '-' || LPAD(v_num::TEXT, 3, '0');
+    IF p_table = 'classes' AND NOT EXISTS (SELECT 1 FROM classes WHERE LOWER(code) = LOWER(v_candidate)) THEN
+      RETURN v_candidate;
+    ELSIF p_table = 'subjects' AND NOT EXISTS (SELECT 1 FROM subjects WHERE LOWER(code) = LOWER(v_candidate)) THEN
+      RETURN v_candidate;
+    ELSIF p_table = 'users' AND NOT EXISTS (SELECT 1 FROM users WHERE LOWER(COALESCE(faculty_code, '')) = LOWER(v_candidate)) THEN
+      RETURN v_candidate;
+    END IF;
+    v_num := v_num + 1;
+  END LOOP;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION generate_session_code(p_date DATE DEFAULT CURRENT_DATE)
+RETURNS TEXT LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_seq INT;
+  v_code TEXT;
+BEGIN
+  SELECT COUNT(*) + 1 INTO v_seq
+  FROM attendance_sessions
+  WHERE session_date = p_date;
+
+  LOOP
+    v_code := 'SES-' || TO_CHAR(p_date, 'YYYYMMDD') || '-' || LPAD(v_seq::TEXT, 3, '0');
+    EXIT WHEN NOT EXISTS (SELECT 1 FROM attendance_sessions WHERE LOWER(session_code) = LOWER(v_code));
+    v_seq := v_seq + 1;
+  END LOOP;
+  RETURN v_code;
+END;
+$$;
+
+-- Distance helper
 CREATE OR REPLACE FUNCTION calc_distance_meters(lat1 DOUBLE PRECISION, lon1 DOUBLE PRECISION, lat2 DOUBLE PRECISION, lon2 DOUBLE PRECISION)
 RETURNS DOUBLE PRECISION LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE
@@ -222,7 +328,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION rpc_verify_login_v7(p_identifier TEXT, p_password TEXT)
+-- Login RPC
+CREATE OR REPLACE FUNCTION rpc_verify_login_v8(p_identifier TEXT, p_password TEXT)
 RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
   v_user RECORD;
@@ -233,12 +340,13 @@ BEGIN
     LOWER(COALESCE(email, '')) = v_ident
     OR LOWER(COALESCE(enrollment_no, '')) = v_ident
     OR LOWER(COALESCE(roll_no, '')) = v_ident
+    OR LOWER(COALESCE(faculty_code, '')) = v_ident
   )
-  ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'faculty' THEN 2 ELSE 3 END
+  ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'faculty' THEN 2 WHEN 'cr' THEN 3 ELSE 4 END
   LIMIT 1;
 
   IF NOT FOUND THEN
-    RETURN jsonb_build_object('ok', FALSE, 'error', 'Account not found. Check Enrollment No or Email.');
+    RETURN jsonb_build_object('ok', FALSE, 'error', 'Account not found. Check ID, Enrollment No, or Email.');
   END IF;
 
   IF NOT v_user.is_active THEN
@@ -254,6 +362,7 @@ BEGIN
     RETURN jsonb_build_object('ok', TRUE, 'user', jsonb_build_object(
       'id', v_user.id,
       'role', v_user.role,
+      'faculty_code', v_user.faculty_code,
       'email', v_user.email,
       'enrollment_no', v_user.enrollment_no,
       'roll_no', v_user.roll_no,
@@ -274,7 +383,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION rpc_change_password_v5(p_user_id UUID, p_old_password TEXT, p_new_password TEXT)
+-- Change password RPC
+CREATE OR REPLACE FUNCTION rpc_change_password_v8(p_user_id UUID, p_old_password TEXT, p_new_password TEXT)
 RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
   v_user RECORD;
@@ -291,7 +401,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION rpc_admin_create_user_v7(
+-- Create user RPC
+CREATE OR REPLACE FUNCTION rpc_admin_create_user_v8(
   p_role TEXT,
   p_email TEXT,
   p_enrollment_no TEXT,
@@ -299,15 +410,28 @@ CREATE OR REPLACE FUNCTION rpc_admin_create_user_v7(
   p_full_name TEXT,
   p_class_id UUID,
   p_password TEXT,
-  p_faculty_permissions JSONB DEFAULT NULL
+  p_faculty_permissions JSONB DEFAULT NULL,
+  p_faculty_code TEXT DEFAULT NULL
 )
 RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_role TEXT := LOWER(TRIM(COALESCE(p_role, 'student')));
+  v_fcode TEXT;
 BEGIN
+  IF v_role NOT IN ('student', 'cr', 'faculty', 'admin') THEN
+    v_role := 'student';
+  END IF;
+
+  IF v_role = 'faculty' THEN
+    v_fcode := COALESCE(NULLIF(TRIM(p_faculty_code), ''), generate_next_code('FAC', 'users', 'faculty_code'));
+  END IF;
+
   INSERT INTO users (
-    role, email, enrollment_no, roll_no, full_name, class_id, password_hash, is_active, faculty_permissions
+    role, faculty_code, email, enrollment_no, roll_no, full_name, class_id, password_hash, is_active, faculty_permissions
   )
   VALUES (
-    p_role,
+    v_role,
+    v_fcode,
     NULLIF(TRIM(LOWER(p_email)), ''),
     NULLIF(TRIM(p_enrollment_no), ''),
     NULLIF(TRIM(p_roll_no), ''),
@@ -328,7 +452,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION rpc_admin_reset_password_v5(p_user_id UUID, p_new_password TEXT)
+-- Reset password RPC
+CREATE OR REPLACE FUNCTION rpc_admin_reset_password_v8(p_user_id UUID, p_new_password TEXT)
 RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
   UPDATE users SET password_hash = crypt(p_new_password, gen_salt('bf', 12)), failed_attempts = 0, locked_until = NULL
@@ -337,7 +462,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION rpc_submit_qr_v6(
+-- Submit QR RPC (supports student and cr roles, merged classes, and geofence)
+CREATE OR REPLACE FUNCTION rpc_submit_qr_v8(
   p_session_id UUID,
   p_student_id UUID,
   p_nonce TEXT,
@@ -356,6 +482,7 @@ DECLARE
   v_target_lng DOUBLE PRECISION;
   v_target_rad INT;
   v_dist DOUBLE PRECISION;
+  v_allowed_classes UUID[];
 BEGIN
   SELECT * INTO v_sess FROM attendance_sessions WHERE id = p_session_id AND is_active = TRUE;
   IF NOT FOUND THEN
@@ -366,13 +493,14 @@ BEGIN
     RETURN jsonb_build_object('ok', FALSE, 'error', 'QR Code expired. Scan the live screen QR.');
   END IF;
 
-  SELECT * INTO v_user FROM users WHERE id = p_student_id AND role = 'student' AND is_active = TRUE;
+  SELECT * INTO v_user FROM users WHERE id = p_student_id AND role IN ('student', 'cr') AND is_active = TRUE;
   IF NOT FOUND THEN
     RETURN jsonb_build_object('ok', FALSE, 'error', 'Student account inactive or not found.');
   END IF;
 
-  IF v_user.class_id IS DISTINCT FROM v_sess.class_id THEN
-    RETURN jsonb_build_object('ok', FALSE, 'error', 'You do not belong to this class.');
+  v_allowed_classes := COALESCE(NULLIF(v_sess.class_ids, ARRAY[]::UUID[]), ARRAY[v_sess.class_id]);
+  IF v_user.class_id IS NULL OR NOT (v_user.class_id = ANY(v_allowed_classes)) THEN
+    RETURN jsonb_build_object('ok', FALSE, 'error', 'You do not belong to this class or merged batch.');
   END IF;
 
   IF v_user.device_fp IS NULL OR v_user.device_fp = '' THEN
@@ -380,11 +508,11 @@ BEGIN
   ELSIF v_user.device_fp <> p_device_fp THEN
     INSERT INTO audit_logs (event_type, actor_id, details)
     VALUES ('BLOCKED', v_user.id, 'Device mismatch for Roll ' || COALESCE(v_user.roll_no, '?'));
-    RETURN jsonb_build_object('ok', FALSE, 'error', 'DEVICE_MISMATCH', 'message', 'Unrecognized device. Submit a Device Update Request to Admin.');
+    RETURN jsonb_build_object('ok', FALSE, 'error', 'DEVICE_MISMATCH', 'message', 'Unrecognized device. Submit a Device Change Request.');
   END IF;
 
   SELECT * INTO v_set FROM system_settings WHERE id = 1;
-  SELECT * INTO v_cls FROM classes WHERE id = v_sess.class_id;
+  SELECT * INTO v_cls FROM classes WHERE id = v_user.class_id;
 
   IF v_cls.custom_geo_enabled AND v_cls.custom_lat IS NOT NULL AND v_cls.custom_lng IS NOT NULL THEN
     v_target_lat := v_cls.custom_lat;
@@ -419,7 +547,8 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION rpc_update_settings_v6(p_patch JSONB)
+-- Update settings RPC
+CREATE OR REPLACE FUNCTION rpc_update_settings_v8(p_patch JSONB)
 RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
   v_new_pass TEXT := NULLIF(TRIM(COALESCE(p_patch->>'smtp_app_password', '')), '');
@@ -431,10 +560,11 @@ BEGIN
     login_subtitle = COALESCE(NULLIF(TRIM(p_patch->>'login_subtitle'), ''), login_subtitle),
     logo_url = COALESCE(NULLIF(TRIM(p_patch->>'logo_url'), ''), logo_url),
     primary_color = COALESCE(NULLIF(TRIM(p_patch->>'primary_color'), ''), primary_color),
-    label_student = COALESCE(NULLIF(TRIM(p_patch->>'label_student'), ''), label_student),
-    label_faculty = COALESCE(NULLIF(TRIM(p_patch->>'label_faculty'), ''), label_faculty),
-    label_class = COALESCE(NULLIF(TRIM(p_patch->>'label_class'), ''), label_class),
-    label_roll = COALESCE(NULLIF(TRIM(p_patch->>'label_roll'), ''), label_roll),
+    default_theme = CASE
+      WHEN LOWER(TRIM(COALESCE(p_patch->>'default_theme', ''))) IN ('dark', 'light')
+      THEN LOWER(TRIM(p_patch->>'default_theme'))
+      ELSE default_theme
+    END,
     qr_interval_seconds = COALESCE((p_patch->>'qr_interval_seconds')::INT, qr_interval_seconds),
     session_timeout_minutes = COALESCE((p_patch->>'session_timeout_minutes')::INT, session_timeout_minutes),
     enforce_lecture_time = COALESCE((p_patch->>'enforce_lecture_time')::BOOLEAN, enforce_lecture_time),
@@ -460,23 +590,35 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION rpc_verify_login_v7(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION rpc_verify_login_v7(TEXT, TEXT) TO postgres, service_role;
+-- Function privileges
+REVOKE ALL ON FUNCTION generate_next_code(TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION generate_next_code(TEXT, TEXT, TEXT) TO postgres, service_role;
 
-REVOKE ALL ON FUNCTION rpc_change_password_v5(UUID, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION rpc_change_password_v5(UUID, TEXT, TEXT) TO postgres, service_role;
+REVOKE ALL ON FUNCTION generate_session_code(DATE) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION generate_session_code(DATE) TO postgres, service_role;
 
-REVOKE ALL ON FUNCTION rpc_admin_create_user_v7(TEXT, TEXT, TEXT, TEXT, TEXT, UUID, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION rpc_admin_create_user_v7(TEXT, TEXT, TEXT, TEXT, TEXT, UUID, TEXT, JSONB) TO postgres, service_role;
+REVOKE ALL ON FUNCTION rpc_verify_login_v8(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION rpc_verify_login_v8(TEXT, TEXT) TO postgres, service_role;
 
-REVOKE ALL ON FUNCTION rpc_admin_reset_password_v5(UUID, TEXT) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION rpc_admin_reset_password_v5(UUID, TEXT) TO postgres, service_role;
+REVOKE ALL ON FUNCTION rpc_change_password_v8(UUID, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION rpc_change_password_v8(UUID, TEXT, TEXT) TO postgres, service_role;
 
-REVOKE ALL ON FUNCTION rpc_submit_qr_v6(UUID, UUID, TEXT, TEXT, DOUBLE PRECISION, DOUBLE PRECISION) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION rpc_submit_qr_v6(UUID, UUID, TEXT, TEXT, DOUBLE PRECISION, DOUBLE PRECISION) TO postgres, service_role;
+REVOKE ALL ON FUNCTION rpc_admin_create_user_v8(TEXT, TEXT, TEXT, TEXT, TEXT, UUID, TEXT, JSONB, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION rpc_admin_create_user_v8(TEXT, TEXT, TEXT, TEXT, TEXT, UUID, TEXT, JSONB, TEXT) TO postgres, service_role;
 
-REVOKE ALL ON FUNCTION rpc_update_settings_v6(JSONB) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION rpc_update_settings_v6(JSONB) TO postgres, service_role;
+REVOKE ALL ON FUNCTION rpc_admin_reset_password_v8(UUID, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION rpc_admin_reset_password_v8(UUID, TEXT) TO postgres, service_role;
+
+REVOKE ALL ON FUNCTION rpc_submit_qr_v8(UUID, UUID, TEXT, TEXT, DOUBLE PRECISION, DOUBLE PRECISION) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION rpc_submit_qr_v8(UUID, UUID, TEXT, TEXT, DOUBLE PRECISION, DOUBLE PRECISION) TO postgres, service_role;
+
+REVOKE ALL ON FUNCTION rpc_update_settings_v8(JSONB) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION rpc_update_settings_v8(JSONB) TO postgres, service_role;
+
+-- Backfill faculty codes if missing
+UPDATE users
+SET faculty_code = 'FAC-' || LPAD(ROW_NUMBER() OVER (ORDER BY created_at, id)::TEXT, 3, '0')
+WHERE role = 'faculty' AND (faculty_code IS NULL OR faculty_code = '');
 
 -- Default Super Admin (pranavpatel.pps@gmail.com / PPS@2004)
 DO $$

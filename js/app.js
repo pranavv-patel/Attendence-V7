@@ -1,45 +1,95 @@
 let CURRENT_USER = null;
 let SETTINGS = {};
-let PENDING_DEVICE_STU = null;
-let FAC_DATA = { assigned_pairs: [], active_sessions: [], roster: [], dash_roster: [], live_session: null, perms: {} };
-let ADM_DATA = { users: [], classes: [], subjects: [], slots: [], device_requests: [], logs: [] };
-let ADMIN_OVERVIEW_SEQ = 0;
-let QR_TIMER = null;
+let PENDING_MISMATCH = null;
+
+// Lazy tab cache flags (data fetched only when clicked)
+const LOADED_TABS = {
+  crToday: false,
+  facLiveSetup: false,
+  facClasses: false,
+  facMatrix: false,
+  admDashboard: false,
+  admUsers: false,
+  admAcademics: false,
+  admSessions: false,
+  admDevices: false
+};
+
+const ADM_STATE = {
+  breakdown: [],
+  users: [],
+  classes: [],
+  subjects: [],
+  slots: [],
+  faculty: [],
+  sessions: [],
+  deviceReqs: [],
+  logs: []
+};
+
+const FAC_STATE = {
+  slots: [],
+  classes: [],
+  subjects: [],
+  sessions: [],
+  liveSession: null,
+  roster: [],
+  qrCount: 0,
+  perms: {}
+};
+
+const CR_STATE = {
+  lectures: [],
+  liveSession: null,
+  roster: [],
+  qrCount: 0
+};
+
+let QR_ROTATE_TIMER = null;
 let CLOCK_TIMER = null;
-let LIVE_POLL_TIMER = null;
-let HTML5_SCANNER = null;
+let ROSTER_POLL_TIMER = null;
+let QR_WIDGET = null;
 
-const ADMIN_PERM_KEYS = [
-  'manage_users', 'manage_academics', 'manage_timetable',
-  'assign_proxy', 'approve_devices', 'manage_geofence',
-  'manage_settings', 'view_reports', 'manage_admins'
-];
+// Student getUserMedia + jsQR camera state
+let STU_STREAM = null;
+let STU_RAF = null;
+let STU_CAM_OPEN = false;
 
-const FAC_PERM_KEYS = [
-  'can_start_regular', 'can_start_extra', 'can_mark_od',
-  'can_edit_attendance', 'can_toggle_gps', 'can_export_reports'
-];
+function getDeviceFp() {
+  let fp = localStorage.getItem('sqr_v8_dev_fp');
+  if (!fp) {
+    fp = 'DEV8-' + Math.random().toString(36).slice(2, 10).toUpperCase() + '-' + Date.now().toString(36).toUpperCase();
+    localStorage.setItem('sqr_v8_dev_fp', fp);
+  }
+  return fp;
+}
 
-function initTheme() {
-  const saved = localStorage.getItem('sqr_theme');
-  const isDark = saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches);
+function applyTheme(theme) {
+  const isDark = theme === 'dark';
   document.documentElement.classList.toggle('dark', isDark);
+  localStorage.setItem('sqr_theme', isDark ? 'dark' : 'light');
   const btn = document.getElementById('btn-theme');
   if (btn) btn.textContent = isDark ? '☀️ Light' : '🌙 Dark';
 }
 
-function toggleDarkMode() {
-  const isDark = document.documentElement.classList.toggle('dark');
-  localStorage.setItem('sqr_theme', isDark ? 'dark' : 'light');
-  document.getElementById('btn-theme').textContent = isDark ? '☀️ Light' : '🌙 Dark';
+function initTheme() {
+  const saved = localStorage.getItem('sqr_theme');
+  const pref = saved || SETTINGS.default_theme || 'dark';
+  applyTheme(pref);
+}
+
+function toggleTheme() {
+  const nowDark = !document.documentElement.classList.contains('dark');
+  applyTheme(nowDark ? 'dark' : 'light');
 }
 
 function toast(msg, isErr = false) {
   const el = document.getElementById('toast');
   el.textContent = msg;
-  el.className = `fixed bottom-5 right-5 z-50 max-w-sm px-4 py-3 rounded-xl shadow-xl text-sm font-semibold text-white ${isErr ? 'bg-rose-600' : 'bg-slate-900 dark:bg-indigo-600'}`;
+  el.className = `fixed bottom-5 right-5 z-50 max-w-sm rounded-xl px-4 py-3 text-xs sm:text-sm font-semibold text-white shadow-2xl ${isErr ? 'bg-rose-600' : 'bg-slate-900 dark:bg-sky-600'}`;
   el.classList.remove('hidden');
-  setTimeout(() => el.classList.add('hidden'), 4000);
+  clearTimeout(window.__toastTimer);
+  window.__toastTimer = setTimeout(() => el.classList.add('hidden'), 3800);
 }
 
 async function api(action, body = {}) {
@@ -60,17 +110,9 @@ async function api(action, body = {}) {
   }
 }
 
-function getDeviceFingerprint() {
-  let fp = localStorage.getItem('sqr_device_fp');
-  if (!fp) {
-    fp = 'DEV-' + Math.random().toString(36).slice(2, 10).toUpperCase() + '-' + Date.now().toString(36).toUpperCase();
-    localStorage.setItem('sqr_device_fp', fp);
-  }
-  return fp;
-}
-
 function togglePassVis(inputId, btn) {
   const inp = document.getElementById(inputId);
+  if (!inp) return;
   if (inp.type === 'password') {
     inp.type = 'text';
     btn.textContent = 'HIDE';
@@ -87,614 +129,891 @@ function closeModal(id) {
 function openChangePassModal() {
   ['cp-old', 'cp-new1', 'cp-new2'].forEach(id => {
     const el = document.getElementById(id);
-    el.value = '';
-    el.type = 'password';
+    if (el) el.value = '';
   });
   document.getElementById('modal-change-pass').classList.remove('hidden');
 }
 
-async function submitChangePassword() {
+async function submitModalPasswordChange() {
   const current_password = document.getElementById('cp-old').value;
   const p1 = document.getElementById('cp-new1').value;
   const p2 = document.getElementById('cp-new2').value;
-  if (p1 !== p2) return toast('New passwords do not match. Re-enter both carefully.', true);
+  if (!p1 || p1.length < 4) return toast('New password must be at least 4 characters.', true);
+  if (p1 !== p2) return toast('New passwords do not match.', true);
   const r = await api('change_password', { current_password, new_password: p1 });
   if (!r.ok) return toast(r.error, true);
   closeModal('modal-change-pass');
-  toast('Password updated successfully!');
+  toast('Password updated!');
 }
 
+function clearSessionLoops() {
+  if (QR_ROTATE_TIMER) { clearInterval(QR_ROTATE_TIMER); QR_ROTATE_TIMER = null; }
+  if (CLOCK_TIMER) { clearInterval(CLOCK_TIMER); CLOCK_TIMER = null; }
+  if (ROSTER_POLL_TIMER) { clearInterval(ROSTER_POLL_TIMER); ROSTER_POLL_TIMER = null; }
+}
+
+function resetLazyFlags() {
+  Object.keys(LOADED_TABS).forEach(k => { LOADED_TABS[k] = false; });
+}
+
+// Startup: ONLY lightweight get_settings + whoami (no heavy table loads on open)
 async function initApp() {
-  initTheme();
+  const fp = getDeviceFp();
+  const fpPrev = document.getElementById('login-fp-code');
+  if (fpPrev) fpPrev.textContent = fp;
+
   const sRes = await api('get_settings');
-  if (sRes.ok) {
-    SETTINGS = sRes.settings || {};
+  if (sRes.ok && sRes.settings) {
+    SETTINGS = sRes.settings;
     document.getElementById('brand-title').textContent = SETTINGS.app_title || 'SmartQR Attendance';
-    document.getElementById('brand-college').textContent = SETTINGS.college_name || 'University Portal v7.1';
-    if (SETTINGS.logo_url) document.getElementById('brand-logo').src = SETTINGS.logo_url;
+    document.getElementById('brand-college').textContent = SETTINGS.college_name || 'University Portal v8.0';
+    if (SETTINGS.login_subtitle) {
+      document.getElementById('login-subtitle').textContent = SETTINGS.login_subtitle;
+    }
+    if (SETTINGS.logo_url) {
+      document.getElementById('brand-logo').src = SETTINGS.logo_url;
+    }
   }
+  initTheme();
 
   const me = await api('whoami');
   if (me.ok && me.user) {
-    await routeUser(me.user);
+    routeToRole(me.user);
   } else {
-    showView('view-login');
+    showScreen('login');
   }
 }
 
-function showView(viewId) {
-  ['view-login', 'view-student', 'view-faculty', 'view-admin'].forEach(v => {
-    document.getElementById(v).classList.toggle('hidden', v !== viewId);
+function showScreen(screenName) {
+  ['login', 'student', 'cr', 'faculty', 'admin'].forEach(s => {
+    document.getElementById('screen-' + s).classList.toggle('hidden', s !== screenName);
   });
-  document.getElementById('nav-user-bar').classList.toggle('hidden', viewId === 'view-login');
+  document.getElementById('nav-user-chip').classList.toggle('hidden', screenName === 'login');
+  document.getElementById('nav-user-chip').classList.toggle('flex', screenName !== 'login');
+  if (screenName !== 'student') stopStudentCamera();
 }
 
-async function routeUser(user) {
+function routeToRole(user) {
   CURRENT_USER = user;
+  resetLazyFlags();
+  clearSessionLoops();
+
   document.getElementById('nav-user-name').textContent = user.full_name;
-  document.getElementById('nav-user-role').textContent = user.is_super_admin ? 'SUPER ADMIN' : user.role.toUpperCase();
+  document.getElementById('nav-user-role').textContent = user.is_super_admin ? 'SUPER ADMIN' : String(user.role || '').toUpperCase();
 
   if (user.role === 'student') {
-    showView('view-student');
+    showScreen('student');
     document.getElementById('stu-name').textContent = user.full_name;
     document.getElementById('stu-meta').textContent = `Enrollment: ${user.enrollment_no || '-'} • Roll: ${user.roll_no || '-'} • Class: ${user.classes?.name || '-'}`;
-    await loadStudentDashboard();
+    document.getElementById('stu-tab-fp').textContent = getDeviceFp();
+    switchStudentTab('scan');
+  } else if (user.role === 'cr') {
+    showScreen('cr');
+    document.getElementById('cr-heading').textContent = `${user.full_name} (CR)`;
+    document.getElementById('cr-sub').textContent = `Class: ${user.classes?.name || '-'} • Today's Lectures Only (Period to +1h)`;
+    switchCRView();
   } else if (user.role === 'faculty') {
-    showView('view-faculty');
-    await initFacultyPortal();
+    showScreen('faculty');
+    document.getElementById('fac-sidebar-meta').textContent = `${user.faculty_code || 'FAC'} • ${user.full_name}`;
+    switchFacultyTab('live');
   } else if (user.role === 'admin') {
-    showView('view-admin');
-    await initAdminPortal();
+    showScreen('admin');
+    switchAdminTab('dashboard');
   }
 }
 
 async function handleLogin(e) {
   e.preventDefault();
-  document.getElementById('device-req-box').classList.add('hidden');
-  const identifier = document.getElementById('login-id').value;
+  document.getElementById('device-mismatch-box').classList.add('hidden');
+  const identifier = document.getElementById('login-id').value.trim();
   const password = document.getElementById('login-pass').value;
-  const res = await api('login', { identifier, password, device_fp: getDeviceFingerprint() });
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+
+  const res = await api('login', { identifier, password, device_fp: getDeviceFp() });
+  btn.disabled = false;
+  btn.textContent = 'Sign In Securely';
 
   if (!res.ok) {
     if (res.error === 'DEVICE_MISMATCH') {
-      PENDING_DEVICE_STU = res;
-      document.getElementById('device-req-msg').textContent = `${res.student_name} (${res.enrollment_no || res.roll_no}): ${res.message}`;
-      document.getElementById('device-req-box').classList.remove('hidden');
+      PENDING_MISMATCH = res;
+      document.getElementById('device-mismatch-msg').textContent = res.message || 'Unrecognized device.';
+      document.getElementById('device-mismatch-box').classList.remove('hidden');
       return;
     }
     return toast(res.error || 'Login failed', true);
   }
-  await routeUser(res.user);
+  routeToRole(res.user);
 }
 
-async function submitDeviceRequest() {
-  if (!PENDING_DEVICE_STU) return;
-  const reason = document.getElementById('device-req-reason').value;
+async function submitDeviceRequestFromLogin() {
+  if (!PENDING_MISMATCH) return;
+  const reason = document.getElementById('login-dev-reason').value.trim();
   const r = await api('request_device_change', {
-    student_id: PENDING_DEVICE_STU.student_id,
-    new_device_fp: getDeviceFingerprint(),
+    student_id: PENDING_MISMATCH.student_id,
+    new_device_fp: getDeviceFp(),
     reason
   });
   if (!r.ok) return toast(r.error, true);
-  toast(r.message);
-  document.getElementById('device-req-box').classList.add('hidden');
+  toast(r.message || 'Device request sent!');
+  document.getElementById('device-mismatch-box').classList.add('hidden');
 }
 
 async function logoutUser() {
-  clearInterval(QR_TIMER);
-  clearInterval(CLOCK_TIMER);
-  clearInterval(LIVE_POLL_TIMER);
-  stopStudentScanner();
+  clearSessionLoops();
+  stopStudentCamera();
   await api('logout');
   CURRENT_USER = null;
-  showView('view-login');
+  showScreen('login');
 }
 
-async function loadStudentDashboard() {
-  const res = await api('student_dashboard');
-  if (!res.ok) return;
-  const box = document.getElementById('stu-subject-list');
-  if (!res.summary.length) {
-    box.innerHTML = '<p class="text-slate-400">No lectures recorded yet.</p>';
+// ================= STUDENT PORTAL (3 Options Only) =================
+function switchStudentTab(tabName) {
+  if (tabName !== 'scan') stopStudentCamera();
+  ['scan', 'password', 'device'].forEach(t => {
+    document.getElementById(`stu-tab-${t}`).classList.toggle('hidden', t !== tabName);
+  });
+  document.querySelectorAll('.stu-nav-btn').forEach(btn => {
+    const active = btn.dataset.stuTab === tabName;
+    btn.classList.toggle('text-sky-600', active);
+    btn.classList.toggle('dark:text-sky-400', active);
+    btn.classList.toggle('border-sky-500', active);
+    btn.classList.toggle('text-slate-500', !active);
+    btn.classList.toggle('dark:text-slate-400', !active);
+    btn.classList.toggle('border-transparent', !active);
+  });
+  if (tabName === 'device') {
+    document.getElementById('stu-tab-fp').textContent = getDeviceFp();
+  }
+}
+
+// Clean getUserMedia + jsQR lifecycle so camera opens & closes repeatedly without getting stuck
+function stopStudentCamera() {
+  STU_CAM_OPEN = false;
+  if (STU_RAF) {
+    cancelAnimationFrame(STU_RAF);
+    STU_RAF = null;
+  }
+  const video = document.getElementById('stu-video');
+  if (STU_STREAM) {
+    STU_STREAM.getTracks().forEach(track => {
+      try { track.stop(); } catch {}
+    });
+    STU_STREAM = null;
+  }
+  if (video) {
+    try { video.pause(); } catch {}
+    video.srcObject = null;
+    video.classList.add('hidden');
+  }
+  document.getElementById('stu-scan-overlay').classList.add('hidden');
+  document.getElementById('stu-cam-idle').classList.remove('hidden');
+  const btn = document.getElementById('btn-stu-cam');
+  if (btn) {
+    btn.textContent = 'Open Camera';
+    btn.className = 'px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold';
+  }
+}
+
+async function toggleStudentCamera() {
+  if (STU_CAM_OPEN) {
+    stopStudentCamera();
+    document.getElementById('stu-scan-status').textContent = 'Camera closed.';
     return;
   }
-  box.innerHTML = res.summary.map(s => {
-    const pct = s.total ? Math.round((s.attended / s.total) * 100) : 100;
-    const ok = pct >= 75;
-    return `
-      <div class="p-3 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between">
-        <div>
-          <p class="font-bold">${s.subject_name} <span class="text-slate-400">(${s.subject_code})</span></p>
-          <p class="text-[11px] text-slate-500">Attended ${s.attended} of ${s.total} lectures</p>
-        </div>
-        <span class="px-2.5 py-1 rounded-lg font-extrabold ${ok ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300' : 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300'}">${pct}%</span>
-      </div>`;
-  }).join('');
-}
-
-function stopStudentScanner() {
-  if (HTML5_SCANNER) {
-    HTML5_SCANNER.stop().then(() => HTML5_SCANNER.clear()).catch(() => {});
-    HTML5_SCANNER = null;
-  }
-}
-
-function startStudentScanner() {
-  stopStudentScanner();
-  const statusEl = document.getElementById('scan-status');
+  stopStudentCamera();
+  const statusEl = document.getElementById('stu-scan-status');
+  const btn = document.getElementById('btn-stu-cam');
   statusEl.textContent = 'Starting camera...';
 
-  HTML5_SCANNER = new Html5Qrcode('qr-reader');
-  HTML5_SCANNER.start(
-    { facingMode: 'environment' },
-    { fps: 10, qrbox: { width: 220, height: 220 }, videoConstraints: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } } },
-    async (decodedText) => {
-      stopStudentScanner();
-      statusEl.textContent = 'QR captured! Verifying attendance & location...';
-      let payload;
-      try { payload = JSON.parse(decodedText); } catch {
-        statusEl.textContent = 'Invalid QR code format.';
-        return toast('Invalid QR code', true);
-      }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    statusEl.textContent = 'Camera API not available in this browser.';
+    return toast('Camera not supported on this browser.', true);
+  }
 
-      const sendScan = async (lat = null, lng = null) => {
-        const res = await api('submit_qr', {
-          session_id: payload.s,
-          nonce: payload.n,
-          device_fp: getDeviceFingerprint(),
-          lat,
-          lng
-        });
-        if (!res.ok) {
-          statusEl.textContent = res.message || res.error;
-          return toast(res.message || res.error, true);
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false
+    });
+    STU_STREAM = stream;
+    STU_CAM_OPEN = true;
+
+    const video = document.getElementById('stu-video');
+    const canvas = document.getElementById('stu-canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    video.srcObject = stream;
+    video.classList.remove('hidden');
+    document.getElementById('stu-cam-idle').classList.add('hidden');
+    document.getElementById('stu-scan-overlay').classList.remove('hidden');
+    btn.textContent = 'Close Camera';
+    btn.className = 'px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold';
+    statusEl.textContent = 'Point camera at classroom QR...';
+
+    await video.play();
+
+    const scanLoop = async () => {
+      if (!STU_CAM_OPEN || !STU_STREAM) return;
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = typeof jsQR === 'function' ? jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' }) : null;
+        if (code && code.data) {
+          stopStudentCamera();
+          statusEl.textContent = 'QR captured! Submitting...';
+          await handleStudentQrPayload(code.data);
+          return;
         }
-        statusEl.textContent = 'Attendance Marked Present (P) ✓';
-        toast('Attendance marked Present (P)!');
-        loadStudentDashboard();
-      };
-
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          pos => sendScan(pos.coords.latitude, pos.coords.longitude),
-          () => sendScan(null, null),
-          { enableHighAccuracy: true, timeout: 5000, maximumAge: 10000 }
-        );
-      } else {
-        sendScan(null, null);
       }
-    }
-  ).catch(err => {
-    statusEl.textContent = 'Camera error: ' + err;
-  });
+      STU_RAF = requestAnimationFrame(scanLoop);
+    };
+    STU_RAF = requestAnimationFrame(scanLoop);
+  } catch (err) {
+    stopStudentCamera();
+    statusEl.textContent = 'Camera permission denied or unavailable.';
+    toast('Could not open camera: ' + (err.message || err), true);
+  }
 }
 
-async function initFacultyPortal() {
-  const res = await api('faculty_init');
-  if (!res.ok) return toast(res.error, true);
-  FAC_DATA.assigned_pairs = res.assigned_pairs || [];
-  FAC_DATA.active_sessions = res.active_sessions || [];
-  FAC_DATA.perms = res.faculty_permissions || {};
+async function handleStudentQrPayload(rawText) {
+  let payload;
+  try {
+    payload = JSON.parse(rawText);
+  } catch {
+    document.getElementById('stu-scan-status').textContent = 'Invalid QR payload.';
+    return toast('Invalid QR code.', true);
+  }
 
-  document.getElementById('btn-reg-lecture').classList.toggle('hidden', FAC_DATA.perms.can_start_regular === false);
-  document.getElementById('btn-extra-lecture').classList.toggle('hidden', !res.settings?.allow_extra_lectures || FAC_DATA.perms.can_start_extra === false);
-  document.getElementById('fac-export-bar').classList.toggle('hidden', FAC_DATA.perms.can_export_reports === false);
-  document.getElementById('fac-geo-wrap').classList.toggle('hidden', FAC_DATA.perms.can_toggle_gps === false);
+  const sendAttendance = async (lat = null, lng = null) => {
+    const res = await api('submit_qr', {
+      session_id: payload.s || payload.sid,
+      nonce: payload.n,
+      device_fp: getDeviceFp(),
+      lat,
+      lng
+    });
+    if (!res.ok) {
+      const msg = res.message || res.error || 'Could not mark attendance.';
+      document.getElementById('stu-scan-status').textContent = msg;
+      return toast(msg, true);
+    }
+    document.getElementById('stu-scan-status').textContent = 'Attendance Marked Present (P) ✓';
+    toast('Attendance Marked Present (P)!');
+  };
 
-  const sel = document.getElementById('fac-class-select');
-  if (!FAC_DATA.assigned_pairs.length) {
-    sel.innerHTML = '<option value="">No classes assigned yet (Ask Admin)</option>';
+  if (SETTINGS.geofence_enabled && navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      pos => sendAttendance(pos.coords.latitude, pos.coords.longitude),
+      () => sendAttendance(null, null),
+      { enableHighAccuracy: true, timeout: 6000, maximumAge: 10000 }
+    );
+  } else {
+    await sendAttendance(null, null);
+  }
+}
+
+function validateStudentPasswordMatch() {
+  const p1 = document.getElementById('stu-cp-new1').value;
+  const p2 = document.getElementById('stu-cp-new2').value;
+  const hint = document.getElementById('stu-cp-match-hint');
+  if (!p1 && !p2) {
+    hint.textContent = '';
     return;
   }
-  sel.innerHTML = FAC_DATA.assigned_pairs.map((p, idx) =>
-    `<option value="${idx}">${p.class_name} (${p.class_code}) — ${p.subject_name}</option>`
-  ).join('');
-
-  onFacultyClassChange();
-
-  if (FAC_DATA.active_sessions.length > 0) {
-    openLiveFacultySession(FAC_DATA.active_sessions[0].id);
+  if (p1.length < 4) {
+    hint.textContent = 'Use at least 4 characters.';
+    hint.className = 'text-[11px] mt-1 font-semibold text-amber-600';
+    return;
+  }
+  if (p1 === p2) {
+    hint.textContent = 'Passwords match ✓';
+    hint.className = 'text-[11px] mt-1 font-semibold text-emerald-600';
+  } else {
+    hint.textContent = 'Passwords do not match yet.';
+    hint.className = 'text-[11px] mt-1 font-semibold text-rose-600';
   }
 }
 
-async function onFacultyClassChange() {
-  const idx = document.getElementById('fac-class-select').value;
-  const pair = FAC_DATA.assigned_pairs[idx];
-  if (!pair) return;
+async function submitStudentPassword() {
+  const current_password = document.getElementById('stu-cp-old').value;
+  const p1 = document.getElementById('stu-cp-new1').value;
+  const p2 = document.getElementById('stu-cp-new2').value;
+  if (!p1 || p1.length < 4) return toast('New password must be at least 4 characters.', true);
+  if (p1 !== p2) return toast('New passwords do not match.', true);
 
-  document.getElementById('fac-dash-title').textContent = `${pair.class_name} — ${pair.subject_name} Dashboard`;
-  const res = await api('faculty_class_dashboard', { class_id: pair.class_id, subject_id: pair.subject_id });
+  const res = await api('change_password', { current_password, new_password: p1 });
   if (!res.ok) return toast(res.error, true);
 
-  FAC_DATA.dash_roster = res.roster || [];
-  document.getElementById('fac-stat-lectures').textContent = res.total_lectures;
-  document.getElementById('fac-stat-avg').textContent = `${res.average_pct}%`;
+  ['stu-cp-old', 'stu-cp-new1', 'stu-cp-new2'].forEach(id => { document.getElementById(id).value = ''; });
+  document.getElementById('stu-cp-match-hint').textContent = '';
+  toast('Password updated successfully!');
+}
 
-  const tbody = document.getElementById('fac-dash-tbody');
-  tbody.innerHTML = FAC_DATA.dash_roster.map(r => {
-    const low = r.percentage < 75;
+async function submitStudentDeviceRequest() {
+  const reason = document.getElementById('stu-dev-reason').value.trim();
+  const res = await api('request_device_change', {
+    student_id: CURRENT_USER?.id,
+    new_device_fp: getDeviceFp(),
+    reason
+  });
+  if (!res.ok) return toast(res.error, true);
+  document.getElementById('stu-dev-reason').value = '';
+  toast(res.message || 'Device change request submitted!');
+}
+
+// ================= CR PORTAL =================
+async function switchCRView() {
+  if (!LOADED_TABS.crToday) {
+    await loadCRTodayLectures(false);
+  }
+}
+
+async function loadCRTodayLectures(force = false) {
+  if (LOADED_TABS.crToday && !force) return;
+  const res = await api('cr_today_lectures');
+  if (!res.ok) return toast(res.error, true);
+  LOADED_TABS.crToday = true;
+  CR_STATE.lectures = res.lectures || [];
+  renderCRLecturesList();
+
+  const existingActive = CR_STATE.lectures.find(l => l.active_session && l.active_session.is_active);
+  if (existingActive && existingActive.active_session) {
+    openSessionMonitor(existingActive.active_session.id, 'cr');
+  }
+}
+
+function renderCRLecturesList() {
+  const box = document.getElementById('cr-lectures-list');
+  if (!CR_STATE.lectures.length) {
+    box.innerHTML = '<p class="text-slate-400">No lectures scheduled for your class today.</p>';
+    return;
+  }
+
+  box.innerHTML = CR_STATE.lectures.map(lec => {
+    const classLabel = (lec.class_names || []).join(' + ');
+    const allowed = lec.window_allowed;
     return `
-      <tr class="${low ? 'bg-rose-50/50 dark:bg-rose-950/20' : ''}">
-        <td class="p-3 font-bold">${r.roll_no || '-'} <span class="text-slate-400 font-normal">(${r.enrollment_no || '-'})</span></td>
-        <td class="p-3 font-semibold">${r.full_name}</td>
-        <td class="p-3 text-center text-emerald-600 font-bold">${r.p_count}</td>
-        <td class="p-3 text-center text-amber-600 font-bold">${r.od_count}</td>
-        <td class="p-3 text-center font-bold">${r.attended} / ${r.total_lectures}</td>
-        <td class="p-3 text-right font-extrabold ${low ? 'text-rose-600' : 'text-emerald-600'}">${r.percentage}%</td>
-      </tr>`;
+      <div class="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+        <div>
+          <div class="font-mono text-[11px] font-bold text-sky-600 dark:text-sky-400">${lec.start_time} – ${lec.end_time} (v${lec.timetable_version})</div>
+          <div class="font-extrabold text-sm mt-0.5">${lec.subject_name} <span class="text-slate-400 font-normal">(${lec.subject_code})</span></div>
+          <div class="text-[11px] text-slate-500">${classLabel} • ${lec.window_reason}</div>
+        </div>
+        <button type="button" ${!allowed ? 'disabled' : ''} onclick="crOpenSlotQr('${lec.slot_id}')" class="px-3.5 py-2 rounded-xl font-bold text-xs ${allowed ? 'bg-sky-500 hover:bg-sky-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'}">
+          ${lec.active_session ? 'Re-Open QR' : 'Open QR'}
+        </button>
+      </div>
+    `;
   }).join('');
+}
+
+async function crOpenSlotQr(slotId) {
+  const res = await api('cr_open_lecture_qr', { slot_id: slotId });
+  if (!res.ok) return toast(res.error, true);
+  toast("Today's lecture QR opened!");
+  await openSessionMonitor(res.session.id, 'cr');
+}
+
+async function crMarkSelfAttendance() {
+  if (!CR_STATE.liveSession) return toast('Open QR first.', true);
+  const res = await api('cr_mark_self', { session_id: CR_STATE.liveSession.id });
+  if (!res.ok) return toast(res.error, true);
+  toast('Your CR attendance has been marked Present (P)!');
+  await refreshSessionMonitorData(CR_STATE.liveSession.id, 'cr');
+}
+
+// ================= FACULTY PORTAL (Lazy Tabs) =================
+async function switchFacultyTab(tab) {
+  ['live', 'classes', 'matrix'].forEach(t => {
+    document.getElementById(`fac-tab-${t}`).classList.toggle('hidden', t !== tab);
+  });
+  document.querySelectorAll('.fac-nav-btn').forEach(btn => {
+    const active = btn.dataset.facTab === tab;
+    btn.classList.toggle('bg-slate-800', active);
+    btn.classList.toggle('text-white', active);
+  });
+
+  if (tab === 'live' && !LOADED_TABS.facLiveSetup) {
+    await loadFacultyLiveSetup();
+  } else if (tab === 'classes' && !LOADED_TABS.facClasses) {
+    await loadFacultyClasses(false);
+  } else if (tab === 'matrix' && !LOADED_TABS.facMatrix) {
+    await loadFacultyMatrix(false);
+  }
+}
+
+async function loadFacultyLiveSetup() {
+  const res = await api('faculty_classes');
+  if (!res.ok) return toast(res.error, true);
+  LOADED_TABS.facLiveSetup = true;
+  FAC_STATE.classes = res.classes || [];
+  FAC_STATE.subjects = res.subjects || [];
+  FAC_STATE.slots = res.slots || [];
+
+  const clsHtml = FAC_STATE.classes.map(c => `<option value="${c.id}">${c.name} (${c.code})</option>`).join('');
+  document.getElementById('fac-start-class').innerHTML = clsHtml;
+  document.getElementById('fac-merge-classes').innerHTML = clsHtml;
+  document.getElementById('fac-start-subject').innerHTML = FAC_STATE.subjects.map(s => `<option value="${s.id}">${s.name} (${s.code})</option>`).join('');
+}
+
+async function loadFacultyClasses(force = false) {
+  if (LOADED_TABS.facClasses && !force) return;
+  const res = await api('faculty_classes');
+  if (!res.ok) return toast(res.error, true);
+  LOADED_TABS.facClasses = true;
+  FAC_STATE.slots = res.slots || [];
+  FAC_STATE.classes = res.classes || [];
+  FAC_STATE.subjects = res.subjects || [];
+
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const grid = document.getElementById('fac-classes-grid');
+  if (!FAC_STATE.slots.length) {
+    grid.innerHTML = '<p class="text-slate-400">No timetable slots assigned yet.</p>';
+    return;
+  }
+  grid.innerHTML = FAC_STATE.slots.map(sl => {
+    const cIds = sl.class_ids || [sl.class_id];
+    const isMerged = cIds.length > 1;
+    return `
+      <div class="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="font-mono text-[11px] font-bold text-sky-500">${days[sl.day_of_week] || ''} • ${sl.start_time}–${sl.end_time}</span>
+          ${isMerged ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300">MERGED</span>' : '<span class="text-[10px] text-slate-400">v' + (sl.version_no || 1) + '</span>'}
+        </div>
+        <div class="font-extrabold text-sm">${sl.subject_name} <span class="text-slate-400 font-normal">(${sl.subject_code})</span></div>
+        <div class="text-slate-500 dark:text-slate-400">${(sl.class_names || []).join(' + ')}</div>
+        <button type="button" onclick='startSessionFromSlot(${JSON.stringify(sl).replace(/'/g, "&#39;")})' class="w-full mt-2 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold">Start Lecture QR</button>
+      </div>
+    `;
+  }).join('');
+}
+
+async function startSessionFromSlot(sl) {
+  switchFacultyTab('live');
+  const res = await api('start_session', {
+    class_id: sl.class_id,
+    class_ids: sl.class_ids || [sl.class_id],
+    subject_id: sl.subject_id,
+    slot_id: sl.id,
+    slot_start_time: sl.start_time,
+    slot_end_time: sl.end_time,
+    session_type: 'REGULAR'
+  });
+  if (!res.ok) return toast(res.error, true);
+  toast('Lecture QR started!');
+  await openSessionMonitor(res.session.id, 'fac');
 }
 
 async function startFacultyLecture(sessionType) {
-  const idx = document.getElementById('fac-class-select').value;
-  const pair = FAC_DATA.assigned_pairs[idx];
-  if (!pair) return toast('Select a class and subject first.', true);
+  const primaryClass = document.getElementById('fac-start-class').value;
+  const mergedSel = [...document.getElementById('fac-merge-classes').selectedOptions].map(o => o.value);
+  const classIds = [...new Set([primaryClass, ...mergedSel].filter(Boolean))];
+  const subjectId = document.getElementById('fac-start-subject').value;
 
   const res = await api('start_session', {
-    class_id: pair.class_id,
-    subject_id: pair.subject_id,
+    class_id: primaryClass,
+    class_ids: classIds,
+    subject_id: subjectId,
     session_type: sessionType
   });
   if (!res.ok) return toast(res.error, true);
-  toast(`${sessionType} Lecture started!`);
-  openLiveFacultySession(res.session.id);
+  toast(`${sessionType} session started!`);
+  await openSessionMonitor(res.session.id, 'fac');
 }
 
-async function openLiveFacultySession(sessionId) {
-  clearInterval(QR_TIMER);
-  clearInterval(CLOCK_TIMER);
-  clearInterval(LIVE_POLL_TIMER);
-
-  const res = await api('session_roster', { session_id: sessionId });
+async function toggleFacultyGeo() {
+  if (!FAC_STATE.liveSession) return;
+  const checked = document.getElementById('fac-geo-toggle').checked;
+  const res = await api('toggle_session_geo', { session_id: FAC_STATE.liveSession.id, geofence_override: checked });
   if (!res.ok) return toast(res.error, true);
+  toast(`Session GPS ${checked ? 'enabled' : 'disabled'}.`);
+}
 
-  const s = res.session;
-  FAC_DATA.live_session = s;
-  FAC_DATA.roster = res.roster || [];
+async function loadFacultyMatrix(force = false) {
+  if (LOADED_TABS.facMatrix && !force) return;
+  const res = await api('faculty_attendance_matrix');
+  if (!res.ok) return toast(res.error, true);
+  LOADED_TABS.facMatrix = true;
+  FAC_STATE.sessions = res.sessions || [];
 
-  document.getElementById('fac-live-panel').classList.remove('hidden');
-  document.getElementById('live-session-type').textContent = s.session_type || 'REGULAR';
-  document.getElementById('live-class-subject').textContent = `${s.classes?.name || 'Class'} • ${s.subjects?.name || 'Subject'}`;
-  document.getElementById('qr-watermark-top').textContent = `${s.classes?.code || ''} • ${s.subjects?.code || ''}`;
-  document.getElementById('fac-geo-switch').checked = s.geofence_override !== false && (s.geofence_override === true || Boolean(SETTINGS.geofence_enabled));
+  const tbody = document.getElementById('fac-history-tbody');
+  if (!FAC_STATE.sessions.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-slate-400">No lectures found yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = FAC_STATE.sessions.map(s => `
+    <tr>
+      <td class="p-3 font-mono font-bold text-sky-600 dark:text-sky-400">${s.session_code}</td>
+      <td class="p-3 font-mono">${s.session_date}</td>
+      <td class="p-3 font-bold">${s.class_label}</td>
+      <td class="p-3">${s.subject_name}</td>
+      <td class="p-3 text-center font-bold">${s.p_count + s.od_count}</td>
+      <td class="p-3 text-center font-mono">${s.manual_headcount ?? '-'}</td>
+      <td class="p-3 text-right">
+        <button type="button" onclick="switchFacultyTab('live'); openSessionMonitor('${s.id}', 'fac')" class="px-2.5 py-1 rounded-lg bg-sky-500/15 text-sky-600 dark:text-sky-400 font-bold">Open</button>
+      </td>
+    </tr>
+  `).join('');
+}
 
-  renderQrCode(s.id, s.current_nonce);
-  renderLiveRoster();
+// ================= SHARED LIVE SESSION MONITOR (Faculty & CR) =================
+function renderQrElement(containerId, sessionId, nonce) {
+  const box = document.getElementById(containerId);
+  if (!box) return;
+  box.innerHTML = '';
+  if (typeof QRCode === 'function') {
+    QR_WIDGET = new QRCode(box, {
+      text: JSON.stringify({ s: sessionId, n: nonce }),
+      width: 196,
+      height: 196
+    });
+  }
+}
+
+async function openSessionMonitor(sessionId, mode) {
+  clearSessionLoops();
+  await refreshSessionMonitorData(sessionId, mode);
 
   CLOCK_TIMER = setInterval(() => {
-    document.getElementById('qr-watermark-time').textContent = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST';
+    const nowStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST';
+    const el = document.getElementById(mode === 'cr' ? 'cr-qr-clock' : 'fac-qr-clock');
+    if (el) el.textContent = nowStr;
   }, 1000);
 
-  const intervalMs = (SETTINGS.qr_interval_seconds || 15) * 1000;
-  QR_TIMER = setInterval(async () => {
-    const r = await api('rotate_nonce', { session_id: s.id });
-    if (r.ok) renderQrCode(s.id, r.nonce);
-  }, intervalMs);
-
-  LIVE_POLL_TIMER = setInterval(async () => {
-    const poll = await api('session_roster', { session_id: s.id });
-    if (poll.ok) {
-      FAC_DATA.roster = poll.roster || [];
-      renderLiveRoster();
+  const rotateMs = (Number(SETTINGS.qr_interval_seconds) || 15) * 1000;
+  QR_ROTATE_TIMER = setInterval(async () => {
+    const r = await api('rotate_nonce', { session_id: sessionId });
+    if (r.ok) {
+      renderQrElement(mode === 'cr' ? 'cr-qr-box' : 'fac-qr-box', sessionId, r.nonce);
     }
-  }, 5000);
+  }, rotateMs);
+
+  ROSTER_POLL_TIMER = setInterval(() => {
+    refreshSessionMonitorData(sessionId, mode);
+  }, 4000);
 }
 
-function renderQrCode(sessionId, nonce) {
-  const box = document.getElementById('fac-qr-box');
-  box.innerHTML = '';
-  new QRCode(box, {
-    text: JSON.stringify({ s: sessionId, n: nonce }),
-    width: 200,
-    height: 200
+async function refreshSessionMonitorData(sessionId, mode) {
+  const res = await api('session_roster', { session_id: sessionId });
+  if (!res.ok) return;
+
+  const s = res.session;
+  const roster = res.roster || [];
+  const qrCount = Number(res.qr_count || 0);
+
+  if (mode === 'cr') {
+    CR_STATE.liveSession = s;
+    CR_STATE.roster = roster;
+    CR_STATE.qrCount = qrCount;
+
+    document.getElementById('cr-live-panel').classList.remove('hidden');
+    document.getElementById('cr-live-code').textContent = s.session_code;
+    document.getElementById('cr-live-title').textContent = `${s.subject_name} • ${s.class_label}`;
+    renderQrElement('cr-qr-box', s.id, s.current_nonce);
+
+    const scanned = roster.filter(r => r.status === 'P' || r.status === 'OD');
+    document.getElementById('cr-scan-count').textContent = scanned.length;
+    document.getElementById('cr-roll-pills').innerHTML = scanned.length
+      ? scanned.map(r => `<span class="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 font-mono font-bold">${r.roll_no || r.enrollment_no || r.full_name}</span>`).join('')
+      : '<span class="text-slate-400">No scans yet.</span>';
+
+    const hcInp = document.getElementById('cr-headcount-input');
+    if (hcInp && document.activeElement !== hcInp && s.manual_headcount !== null && s.manual_headcount !== undefined) {
+      hcInp.value = s.manual_headcount;
+    }
+    updateHeadcountVerificationUI('cr', qrCount, hcInp ? hcInp.value : s.manual_headcount);
+
+    // CR "Mark My Attendance" button enabled only if session active AND >= 2 QR scans
+    const markBtn = document.getElementById('btn-cr-mark-self');
+    const selfAlready = roster.some(r => r.id === CURRENT_USER?.id && (r.status === 'P' || r.status === 'OD'));
+    const canMark = Boolean(s.is_active) && qrCount >= 2 && !selfAlready;
+    markBtn.disabled = !canMark;
+    markBtn.textContent = selfAlready
+      ? 'My Attendance Marked ✓'
+      : qrCount < 2
+        ? `Mark My Attendance (Need ${2 - qrCount} more QR scan)`
+        : 'Mark My Attendance';
+  } else {
+    FAC_STATE.liveSession = s;
+    FAC_STATE.roster = roster;
+    FAC_STATE.qrCount = qrCount;
+
+    document.getElementById('fac-live-panel').classList.remove('hidden');
+    document.getElementById('fac-live-code').textContent = s.session_code;
+    document.getElementById('fac-live-title').textContent = `${s.subject_name} (${s.subject_code}) • ${s.class_label}`;
+    document.getElementById('fac-geo-toggle').checked = s.geofence_override === true || (s.geofence_override === null && Boolean(SETTINGS.geofence_enabled));
+    renderQrElement('fac-qr-box', s.id, s.current_nonce);
+
+    const scanned = roster.filter(r => r.status === 'P' || r.status === 'OD');
+    document.getElementById('fac-scan-count').textContent = scanned.length;
+    document.getElementById('fac-roll-pills').innerHTML = scanned.length
+      ? scanned.map(r => `<span class="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 font-mono font-bold">${r.roll_no || r.enrollment_no || r.full_name}${r.status === 'OD' ? ' (OD)' : ''}</span>`).join('')
+      : '<span class="text-slate-400">Waiting for students to scan...</span>';
+
+    const hcInp = document.getElementById('fac-headcount-input');
+    if (hcInp && document.activeElement !== hcInp && s.manual_headcount !== null && s.manual_headcount !== undefined) {
+      hcInp.value = s.manual_headcount;
+    }
+    updateHeadcountVerificationUI('fac', qrCount, hcInp ? hcInp.value : s.manual_headcount);
+    renderLiveRoster();
+  }
+}
+
+function updateHeadcountVerificationUI(prefix, qrCount, manualVal) {
+  const qrEl = document.getElementById(`${prefix}-qr-headcount`);
+  const badgeEl = document.getElementById(`${prefix}-headcount-status`);
+  if (qrEl) qrEl.textContent = String(qrCount);
+  if (!badgeEl) return;
+
+  if (manualVal === '' || manualVal === null || manualVal === undefined) {
+    badgeEl.textContent = 'Enter Count';
+    badgeEl.className = 'text-center px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200';
+    return;
+  }
+
+  const mNum = Number(manualVal);
+  if (Number.isNaN(mNum)) {
+    badgeEl.textContent = 'Invalid';
+    return;
+  }
+
+  if (mNum === Number(qrCount)) {
+    badgeEl.textContent = 'Verified ✓ (Match)';
+    badgeEl.className = 'text-center px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300';
+  } else {
+    const diff = mNum - Number(qrCount);
+    badgeEl.textContent = `Diff: ${diff > 0 ? '+' + diff : diff}`;
+    badgeEl.className = 'text-center px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300';
+  }
+}
+
+async function saveHeadcount(prefix) {
+  const session = prefix === 'cr' ? CR_STATE.liveSession : FAC_STATE.liveSession;
+  if (!session) return;
+  const val = document.getElementById(`${prefix}-headcount-input`).value;
+  const res = await api('set_manual_headcount', {
+    session_id: session.id,
+    manual_headcount: val === '' ? null : Number(val)
   });
+  if (!res.ok) return toast(res.error, true);
+  const qrCount = prefix === 'cr' ? CR_STATE.qrCount : FAC_STATE.qrCount;
+  updateHeadcountVerificationUI(prefix, qrCount, val);
+  toast('Manual headcount saved for verification.');
 }
 
 function renderLiveRoster() {
-  const q = (document.getElementById('roster-search').value || '').toLowerCase();
-  const list = FAC_DATA.roster.filter(st =>
+  const q = (document.getElementById('fac-roster-search')?.value || '').trim().toLowerCase();
+  const tbody = document.getElementById('fac-manual-tbody');
+  if (!tbody) return;
+
+  const filtered = (FAC_STATE.roster || []).filter(st =>
+    !q ||
     (st.roll_no || '').toLowerCase().includes(q) ||
     (st.enrollment_no || '').toLowerCase().includes(q) ||
-    (st.full_name || '').toLowerCase().includes(q)
+    (st.full_name || '').toLowerCase().includes(q) ||
+    (st.class_code || '').toLowerCase().includes(q)
   );
 
-  let p = 0, od = 0, a = 0;
-  FAC_DATA.roster.forEach(st => {
-    if (st.status === 'P') p++;
-    else if (st.status === 'OD') od++;
-    else a++;
-  });
-  document.getElementById('cnt-p').textContent = p;
-  document.getElementById('cnt-od').textContent = od;
-  document.getElementById('cnt-a').textContent = a;
-
-  const canEdit = FAC_DATA.perms.can_edit_attendance !== false;
-  const canOD = canEdit && FAC_DATA.perms.can_mark_od !== false;
-
-  const tbody = document.getElementById('live-roster-tbody');
-  tbody.innerHTML = list.map(st => {
+  tbody.innerHTML = filtered.map(st => {
     const isP = st.status === 'P';
     const isOD = st.status === 'OD';
-    const badge = isP
-      ? '<span class="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 font-bold">P</span>'
+    const pill = isP
+      ? '<span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 font-bold">P</span>'
       : isOD
-        ? '<span class="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 font-bold">OD</span>'
-        : '<span class="px-2 py-0.5 rounded bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 font-bold">A</span>';
+        ? '<span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 font-bold">OD</span>'
+        : '<span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300 font-bold">A</span>';
 
     return `
       <tr>
-        <td class="p-3 font-bold">${st.roll_no || '-'} <span class="text-slate-400 font-normal">(${st.enrollment_no || '-'})</span></td>
-        <td class="p-3 font-semibold">${st.full_name}</td>
-        <td class="p-3 text-center">
-          <input type="checkbox" class="tick-p" ${isP ? 'checked' : ''} ${!canEdit ? 'disabled' : ''} onchange="onStudentTick('${st.id}', 'P', this.checked)">
-        </td>
-        <td class="p-3 text-center">
-          <input type="checkbox" class="tick-od" ${isOD ? 'checked' : ''} ${!canOD ? 'disabled' : ''} onchange="onStudentTick('${st.id}', 'OD', this.checked)">
-        </td>
-        <td class="p-3 text-center">${badge}</td>
-      </tr>`;
+        <td class="p-3 font-mono font-bold">${st.roll_no || '-'} <span class="text-slate-400 font-normal">(${st.enrollment_no || '-'})</span></td>
+        <td class="p-3 font-semibold">${st.full_name} ${st.role === 'cr' ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">CR</span>' : ''}</td>
+        <td class="p-3 text-slate-500">${st.class_code || st.class_name || '-'}</td>
+        <td class="p-3 text-center"><input type="checkbox" ${isP ? 'checked' : ''} onchange="onFacultyManualTick('${st.id}', 'P', this.checked)" class="w-4 h-4 cursor-pointer" /></td>
+        <td class="p-3 text-center"><input type="checkbox" ${isOD ? 'checked' : ''} onchange="onFacultyManualTick('${st.id}', 'OD', this.checked)" class="w-4 h-4 cursor-pointer" /></td>
+        <td class="p-3 text-center">${pill}</td>
+      </tr>
+    `;
   }).join('');
 }
 
-async function onStudentTick(studentId, targetStatus, checked) {
-  if (!FAC_DATA.live_session) return;
-  const newStatus = checked ? targetStatus : 'A';
-  const st = FAC_DATA.roster.find(x => x.id === studentId);
-  if (st) st.status = newStatus;
-  renderLiveRoster();
-
+async function onFacultyManualTick(studentId, targetStatus, checked) {
+  if (!FAC_STATE.liveSession) return;
+  const nextStatus = checked ? targetStatus : 'A';
   const res = await api('set_student_tick', {
-    session_id: FAC_DATA.live_session.id,
+    session_id: FAC_STATE.liveSession.id,
     student_id: studentId,
-    status: newStatus
-  });
-  if (!res.ok) toast(res.error, true);
-}
-
-async function toggleFacultySessionGeo() {
-  if (!FAC_DATA.live_session) return;
-  const enabled = document.getElementById('fac-geo-switch').checked;
-  const res = await api('toggle_session_geo', {
-    session_id: FAC_DATA.live_session.id,
-    geofence_override: enabled
+    status: nextStatus
   });
   if (!res.ok) return toast(res.error, true);
-  toast(`GPS Geofencing turned ${enabled ? 'ON' : 'OFF'} for this lecture.`);
+  await refreshSessionMonitorData(FAC_STATE.liveSession.id, 'fac');
 }
 
-async function closeFacultySession() {
-  if (!FAC_DATA.live_session) return;
-  await api('close_session', { session_id: FAC_DATA.live_session.id });
-  clearInterval(QR_TIMER);
-  clearInterval(CLOCK_TIMER);
-  clearInterval(LIVE_POLL_TIMER);
-  FAC_DATA.live_session = null;
-  document.getElementById('fac-live-panel').classList.add('hidden');
-  toast('Lecture ended and attendance locked!');
-  onFacultyClassChange();
+function copySessionRolls() {
+  const roster = CURRENT_USER?.role === 'cr' ? CR_STATE.roster : FAC_STATE.roster;
+  const rolls = (roster || []).filter(r => r.status === 'P' || r.status === 'OD').map(r => r.roll_no || r.enrollment_no || r.full_name);
+  if (!rolls.length) return toast('No roll numbers to copy.', true);
+  navigator.clipboard?.writeText(rolls.join(', '));
+  toast('Roll numbers copied!');
 }
 
-function exportFacultyClassCsv() {
-  if (!FAC_DATA.dash_roster.length) return toast('No data to export.', true);
-  const rows = [['Enrollment No', 'Roll No', 'Student Name', 'Present (P)', 'On-Duty (OD)', 'Total Lectures', 'Percentage']];
-  FAC_DATA.dash_roster.forEach(r => rows.push([r.enrollment_no, r.roll_no, r.full_name, r.p_count, r.od_count, r.total_lectures, r.percentage + '%']));
-  downloadCsv('class_attendance_report.csv', rows);
-}
-
-async function emailFacultyClassReport() {
-  if (!FAC_DATA.dash_roster.length) return toast('No data to email.', true);
-  const title = document.getElementById('fac-dash-title').textContent;
-  const lines = FAC_DATA.dash_roster.map(r => `${r.enrollment_no || r.roll_no} | ${r.full_name}: ${r.attended}/${r.total_lectures} (${r.percentage}%)`);
+async function emailFacultySessionReport() {
+  const s = FAC_STATE.liveSession;
+  if (!s) return;
+  const rolls = (FAC_STATE.roster || []).filter(r => r.status === 'P' || r.status === 'OD').map(r => r.roll_no || r.enrollment_no || r.full_name);
   const res = await api('email_attendance_self', {
-    subject: `Attendance Summary: ${title}`,
-    text: `${title}\n\n${lines.join('\n')}`
+    subject: `Attendance ${s.session_code}: ${s.subject_name} (${s.class_label})`,
+    text: `Session: ${s.session_code}\nDate: ${s.session_date}\nClasses: ${s.class_label}\nSubject: ${s.subject_name}\nManual Headcount: ${s.manual_headcount ?? '-'}\nQR Headcount: ${FAC_STATE.qrCount}\nPresent/OD Rolls: ${rolls.join(', ')}`
   });
   if (!res.ok) return toast(res.error, true);
   toast('Report emailed to your inbox!');
 }
 
-function switchAdminTab(tab) {
-  document.querySelectorAll('#view-admin .nav-pill').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tab === tab);
-  });
-  ['overview', 'users', 'academics', 'geofence', 'devices', 'logs', 'settings'].forEach(t => {
-    document.getElementById(`admin-tab-${t}`).classList.toggle('hidden', t !== tab);
-  });
+async function closeActiveSession() {
+  const session = CURRENT_USER?.role === 'cr' ? CR_STATE.liveSession : FAC_STATE.liveSession;
+  if (!session) return;
+  await api('close_session', { session_id: session.id });
+  clearSessionLoops();
+  toast('Session closed.');
+  if (CURRENT_USER?.role === 'cr') {
+    CR_STATE.liveSession = null;
+    document.getElementById('cr-live-panel').classList.add('hidden');
+    await loadCRTodayLectures(true);
+  } else {
+    FAC_STATE.liveSession = null;
+    document.getElementById('fac-live-panel').classList.add('hidden');
+  }
 }
 
-async function initAdminPortal() {
-  const seq = ++ADMIN_OVERVIEW_SEQ;
-  const res = await api('admin_overview');
-  if (seq !== ADMIN_OVERVIEW_SEQ) return;
-  if (!res.ok) return toast(res.error || 'Failed to load admin data', true);
-
-  ADM_DATA = {
-    ...ADM_DATA,
-    ...res,
-    users: Array.isArray(res.users) ? res.users : [],
-    classes: Array.isArray(res.classes) ? res.classes : [],
-    subjects: Array.isArray(res.subjects) ? res.subjects : [],
-    slots: Array.isArray(res.slots) ? res.slots : [],
-    device_requests: Array.isArray(res.device_requests) ? res.device_requests : [],
-    logs: Array.isArray(res.logs) ? res.logs : []
-  };
-
-  const students = ADM_DATA.users.filter(u => u.role === 'student');
-  const faculty = ADM_DATA.users.filter(u => u.role === 'faculty');
-
-  document.getElementById('adm-kpi-stu').textContent = students.length;
-  document.getElementById('adm-kpi-fac').textContent = faculty.length;
-  document.getElementById('adm-kpi-cls').textContent = ADM_DATA.classes.length;
-  document.getElementById('adm-kpi-dev').textContent = ADM_DATA.device_requests.length;
-  document.getElementById('badge-dev-req').textContent = ADM_DATA.device_requests.length;
-
-  const clsOpts = `<option value="">-- No Class --</option>` + ADM_DATA.classes.map(c => `<option value="${c.id}">${c.name} (${c.code})</option>`).join('');
-  const subOpts = ADM_DATA.subjects.map(s => `<option value="${s.id}">${s.name} (${s.code})</option>`).join('');
-  const facOpts = faculty.map(f => `<option value="${f.id}">${f.full_name}</option>`).join('');
-
-  ['proxy-class', 'new-u-class', 'tt-class', 'eu-class'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.innerHTML = clsOpts;
+// ================= ADMIN PORTAL (Lazy Tab Loading) =================
+async function switchAdminTab(tabName) {
+  ['dashboard', 'users', 'academics', 'sessions', 'devices', 'settings'].forEach(t => {
+    document.getElementById(`adm-tab-${t}`).classList.toggle('hidden', t !== tabName);
   });
-  ['proxy-subject', 'tt-subject'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.innerHTML = subOpts;
-  });
-  ['proxy-faculty', 'tt-faculty'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.innerHTML = facOpts;
+  document.querySelectorAll('.adm-nav-btn').forEach(btn => {
+    const active = btn.dataset.admTab === tabName;
+    btn.classList.toggle('bg-slate-800', active);
+    btn.classList.toggle('text-white', active);
   });
 
-  document.getElementById('set-app-title').value = SETTINGS.app_title || '';
-  document.getElementById('set-college-name').value = SETTINGS.college_name || '';
-  document.getElementById('set-logo-url').value = SETTINGS.logo_url || 'assets/logo.png';
-  document.getElementById('set-extra-lec').checked = Boolean(SETTINGS.allow_extra_lectures);
-  document.getElementById('set-smtp-email').value = SETTINGS.smtp_email || '';
-  document.getElementById('set-smtp-pass').value = '';
-
-  const smtpBadge = document.getElementById('smtp-badge');
-  smtpBadge.textContent = SETTINGS.smtp_configured ? 'Active' : 'Not Configured';
-  smtpBadge.className = SETTINGS.smtp_configured
-    ? 'px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
-    : 'px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300';
-
-  document.getElementById('geo-def-enabled').checked = Boolean(SETTINGS.geofence_enabled);
-  document.getElementById('geo-def-lat').value = SETTINGS.campus_lat || '';
-  document.getElementById('geo-def-lng').value = SETTINGS.campus_lng || '';
-  document.getElementById('geo-def-rad').value = SETTINGS.geofence_radius_meters || 150;
-
-  renderAdminUsers();
-  renderAcademics();
-  renderClassGeoList();
-  renderDeviceRequests();
-  renderAuditLogs();
+  if (tabName === 'dashboard' && !LOADED_TABS.admDashboard) {
+    await loadAdminDashboard(false);
+  } else if (tabName === 'users' && !LOADED_TABS.admUsers) {
+    await loadAdminUsers(false);
+  } else if (tabName === 'academics' && !LOADED_TABS.admAcademics) {
+    await loadAdminAcademics(false);
+  } else if (tabName === 'sessions' && !LOADED_TABS.admSessions) {
+    await loadAdminSessions(false);
+  } else if (tabName === 'devices' && !LOADED_TABS.admDevices) {
+    await loadAdminDevicesLogs(false);
+  } else if (tabName === 'settings') {
+    populateAdminSettingsForm();
+  }
 }
 
-function renderAdminUsers() {
-  const q = (document.getElementById('adm-user-search').value || '').trim().toLowerCase();
-  const roleFilter = document.getElementById('adm-user-filter').value;
-  const tbody = document.getElementById('admin-users-tbody');
+async function loadAdminDashboard(force = false) {
+  if (LOADED_TABS.admDashboard && !force) return;
+  const res = await api('admin_dashboard_summary');
+  if (!res.ok) return toast(res.error, true);
+  LOADED_TABS.admDashboard = true;
+  ADM_STATE.breakdown = res.class_breakdown || [];
 
-  const filtered = (ADM_DATA.users || []).filter(u => {
-    if (roleFilter !== 'ALL' && u.role !== roleFilter) return false;
+  document.getElementById('adm-kpi-stu').textContent = res.kpis?.total_students ?? 0;
+  document.getElementById('adm-kpi-fac').textContent = res.kpis?.total_faculty ?? 0;
+  document.getElementById('adm-kpi-cls').textContent = res.kpis?.total_classes ?? 0;
+  document.getElementById('adm-kpi-live').textContent = res.kpis?.live_sessions ?? 0;
+
+  const tbody = document.getElementById('adm-breakdown-tbody');
+  if (!ADM_STATE.breakdown.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-slate-400">No class breakdown data yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = ADM_STATE.breakdown.map(b => `
+    <tr>
+      <td class="p-3 font-bold">${b.class_name} <span class="font-mono text-sky-500">(${b.class_code})</span></td>
+      <td class="p-3 text-center font-bold">${b.total_students}</td>
+      <td class="p-3 text-center font-bold">${b.lectures_held}</td>
+      <td class="p-3 text-center font-extrabold text-emerald-500">${b.present_pct}%</td>
+      <td class="p-3 text-center font-bold text-amber-500">${b.od_pct}%</td>
+      <td class="p-3 text-center font-bold text-rose-500">${b.absent_pct}%</td>
+      <td class="p-3 text-center font-extrabold ${b.defaulters_count > 0 ? 'text-rose-500' : 'text-slate-400'}">${b.defaulters_count}</td>
+    </tr>
+  `).join('');
+}
+
+async function loadAdminUsers(force = false) {
+  if (LOADED_TABS.admUsers && !force) return;
+  const res = await api('admin_tab_users');
+  if (!res.ok) return toast(res.error, true);
+  LOADED_TABS.admUsers = true;
+  ADM_STATE.users = res.users || [];
+  ADM_STATE.classes = res.classes || [];
+
+  const clsOpts = `<option value="">-- No Class --</option>` + ADM_STATE.classes.map(c => `<option value="${c.id}">${c.name} (${c.code})</option>`).join('');
+  document.getElementById('new-u-class').innerHTML = clsOpts;
+  document.getElementById('eu-class').innerHTML = clsOpts;
+  renderAdminUsersTable();
+}
+
+function renderAdminUsersTable() {
+  const q = (document.getElementById('adm-user-search')?.value || '').trim().toLowerCase();
+  const rf = document.getElementById('adm-user-role-filter')?.value || 'ALL';
+  const tbody = document.getElementById('adm-users-tbody');
+
+  const rows = (ADM_STATE.users || []).filter(u => {
+    if (rf !== 'ALL' && u.role !== rf) return false;
     if (!q) return true;
     return (
       (u.full_name || '').toLowerCase().includes(q) ||
       (u.enrollment_no || '').toLowerCase().includes(q) ||
       (u.roll_no || '').toLowerCase().includes(q) ||
-      (u.email || '').toLowerCase().includes(q)
+      (u.email || '').toLowerCase().includes(q) ||
+      (u.faculty_code || '').toLowerCase().includes(q)
     );
   });
 
-  if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-slate-400">No matching users found.</td></tr>';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-slate-400">No users found.</td></tr>';
     return;
   }
 
-  tbody.innerHTML = filtered.map(u => {
+  tbody.innerHTML = rows.map(u => {
+    const badgeColor = u.role === 'cr'
+      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+      : u.role === 'faculty'
+        ? 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300'
+        : u.role === 'admin'
+          ? 'bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300'
+          : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300';
+
     const ids = [
+      u.faculty_code ? `ID: <b>${u.faculty_code}</b>` : '',
       u.enrollment_no ? `Enroll: <b>${u.enrollment_no}</b>` : '',
       u.roll_no ? `Roll: <b>${u.roll_no}</b>` : '',
-      u.email ? u.email : ''
+      u.email || ''
     ].filter(Boolean).join(' • ');
-
-    const info = u.role === 'student'
-      ? `${u.classes?.name || '-'} • ${u.device_fp ? 'Device Bound' : 'Unbound'}`
-      : u.role === 'admin'
-        ? (u.is_super_admin ? 'SUPER ADMIN (All Rights)' : 'Sub-Admin (Custom Rights)')
-        : 'Faculty Member';
-
-    const rightsBtn = (u.role === 'admin' && !u.is_super_admin)
-      ? `<button onclick="openSubAdminModalById('${u.id}')" class="px-2.5 py-1 bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 font-bold rounded mr-1">Admin Rights</button>`
-      : '';
-
-    const editBtn = `<button onclick="openEditUserModalById('${u.id}')" class="px-2.5 py-1 bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 font-bold rounded mr-1">Edit / Pass</button>`;
 
     return `
       <tr>
-        <td class="p-3 font-extrabold uppercase">${u.role} ${!u.is_active ? '<span class="text-rose-500">(OFF)</span>' : ''}</td>
+        <td class="p-3"><span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${badgeColor}">${u.role}</span></td>
         <td class="p-3 font-bold">${u.full_name}</td>
         <td class="p-3">${ids || '-'}</td>
-        <td class="p-3 text-slate-500 dark:text-slate-400">${info}</td>
+        <td class="p-3 text-slate-500">${u.classes?.name || '-'}</td>
         <td class="p-3 text-right whitespace-nowrap">
-          ${editBtn}
-          ${rightsBtn}
-          ${!u.is_super_admin ? `<button onclick="deleteEntity('users', '${u.id}')" class="px-2.5 py-1 bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 font-bold rounded">Delete</button>` : ''}
+          <button type="button" onclick="openEditUserById('${u.id}')" class="px-2.5 py-1 rounded-lg bg-sky-500/15 text-sky-600 dark:text-sky-400 font-bold mr-1">Edit</button>
+          ${!u.is_super_admin ? `<button type="button" onclick="deleteAdminEntity('users', '${u.id}')" class="px-2.5 py-1 rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400 font-bold">Delete</button>` : ''}
         </td>
-      </tr>`;
+      </tr>
+    `;
   }).join('');
 }
 
-function openEditUserModalById(userId) {
-  const u = (ADM_DATA.users || []).find(item => item.id === userId);
-  if (u) openEditUserModal(u);
-}
-
-function openSubAdminModalById(userId) {
-  const u = (ADM_DATA.users || []).find(item => item.id === userId);
-  if (u) openSubAdminModal(u);
-}
-
-function openEditUserModal(u) {
-  document.getElementById('eu-id').value = u.id;
-  document.getElementById('eu-role').value = u.role;
-  document.getElementById('eu-name').value = u.full_name || '';
-  document.getElementById('eu-email').value = u.email || '';
-  document.getElementById('eu-enroll').value = u.enrollment_no || '';
-  document.getElementById('eu-roll').value = u.roll_no || '';
-  document.getElementById('eu-class').value = u.class_id || '';
-  document.getElementById('eu-pass').value = '';
-  document.getElementById('eu-active').checked = u.is_active !== false;
-  document.getElementById('eu-reset-dev').checked = false;
-
-  const isStu = u.role === 'student';
-  const isFac = u.role === 'faculty';
-  document.getElementById('eu-stu-fields-1').classList.toggle('hidden', !isStu);
-  document.getElementById('eu-stu-fields-2').classList.toggle('hidden', !isStu);
-  document.getElementById('eu-class-wrap').classList.toggle('hidden', !isStu);
-  document.getElementById('eu-reset-dev-wrap').classList.toggle('hidden', !isStu);
-  document.getElementById('eu-fac-perms-box').classList.toggle('hidden', !isFac);
-
-  if (isFac) {
-    const fp = u.faculty_permissions || {};
-    FAC_PERM_KEYS.forEach(k => {
-      document.getElementById(`fperm-${k}`).checked = fp[k] !== false;
-    });
-  }
-
-  document.getElementById('modal-edit-user').classList.remove('hidden');
-}
-
-async function saveEditedUser() {
-  const role = document.getElementById('eu-role').value;
-  let faculty_permissions = null;
-  if (role === 'faculty') {
-    faculty_permissions = {};
-    FAC_PERM_KEYS.forEach(k => { faculty_permissions[k] = document.getElementById(`fperm-${k}`).checked; });
-  }
-
-  const res = await api('admin_update_user', {
-    user_id: document.getElementById('eu-id').value,
-    full_name: document.getElementById('eu-name').value,
-    email: document.getElementById('eu-email').value,
-    enrollment_no: document.getElementById('eu-enroll').value,
-    roll_no: document.getElementById('eu-roll').value,
-    class_id: role === 'student' ? (document.getElementById('eu-class').value || null) : null,
-    new_password: document.getElementById('eu-pass').value,
-    is_active: document.getElementById('eu-active').checked,
-    reset_device: document.getElementById('eu-reset-dev').checked,
-    faculty_permissions
-  });
-  if (!res.ok) return toast(res.error, true);
-  closeModal('modal-edit-user');
-  toast('User updated successfully!');
-  await initAdminPortal();
-}
-
-async function createStandardUser() {
+async function createAdminUser() {
   const full_name = document.getElementById('new-u-name').value.trim();
-  if (!full_name) return toast('Enter a full name first.', true);
-
+  if (!full_name) return toast('Enter full name.', true);
   const res = await api('admin_create_user', {
     role: document.getElementById('new-u-role').value,
     full_name,
@@ -704,87 +1023,60 @@ async function createStandardUser() {
     class_id: document.getElementById('new-u-class').value || null
   });
   if (!res.ok) return toast(res.error, true);
+  ['new-u-name', 'new-u-enroll', 'new-u-roll', 'new-u-email'].forEach(id => { document.getElementById(id).value = ''; });
+  toast('User created!');
+  LOADED_TABS.admDashboard = false;
+  await loadAdminUsers(true);
+}
 
-  ['new-u-name', 'new-u-enroll', 'new-u-roll', 'new-u-email'].forEach(id => {
-    document.getElementById(id).value = '';
+function openEditUserById(userId) {
+  const u = (ADM_STATE.users || []).find(x => x.id === userId);
+  if (!u) return;
+  document.getElementById('eu-id').value = u.id;
+  document.getElementById('eu-role').value = u.role;
+  document.getElementById('eu-name').value = u.full_name || '';
+  document.getElementById('eu-enroll').value = u.enrollment_no || '';
+  document.getElementById('eu-roll').value = u.roll_no || '';
+  document.getElementById('eu-email').value = u.email || '';
+  document.getElementById('eu-class').value = u.class_id || '';
+  document.getElementById('eu-pass').value = '';
+  document.getElementById('eu-active').checked = u.is_active !== false;
+  document.getElementById('eu-reset-dev').checked = false;
+  document.getElementById('modal-edit-user').classList.remove('hidden');
+}
+
+async function saveEditedUser() {
+  const res = await api('admin_update_user', {
+    user_id: document.getElementById('eu-id').value,
+    role: document.getElementById('eu-role').value,
+    full_name: document.getElementById('eu-name').value,
+    enrollment_no: document.getElementById('eu-enroll').value,
+    roll_no: document.getElementById('eu-roll').value,
+    email: document.getElementById('eu-email').value,
+    class_id: document.getElementById('eu-class').value || null,
+    new_password: document.getElementById('eu-pass').value,
+    is_active: document.getElementById('eu-active').checked,
+    reset_device: document.getElementById('eu-reset-dev').checked
   });
-  toast('User added (Default password: Pass@123)');
-  await initAdminPortal();
-}
-
-function openBulkUserModal() { document.getElementById('modal-bulk-users').classList.remove('hidden'); }
-function openBulkTimetableModal() { document.getElementById('modal-bulk-tt').classList.remove('hidden'); }
-
-function loadCsvFileToTextarea(e, targetId) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = ev => { document.getElementById(targetId).value = ev.target.result; };
-  reader.readAsText(file);
-}
-
-function parseCsvLines(text) {
-  return text.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.toLowerCase().startsWith('role,') && !l.toLowerCase().startsWith('class_code,'));
-}
-
-async function submitBulkUsers() {
-  const lines = parseCsvLines(document.getElementById('bulk-users-csv').value);
-  const rows = lines.map(line => {
-    const [role, enrollment_no, roll_no, full_name, email, class_code, password] = line.split(',').map(s => (s || '').trim());
-    return { role, enrollment_no, roll_no, full_name, email, class_code, password };
-  });
-  const res = await api('admin_bulk_import_users', { rows });
   if (!res.ok) return toast(res.error, true);
-  closeModal('modal-bulk-users');
-  toast(`Imported ${res.imported} users!` + (res.errors?.length ? ` (${res.errors.length} skipped)` : ''));
-  await initAdminPortal();
+  closeModal('modal-edit-user');
+  toast('User updated!');
+  LOADED_TABS.admDashboard = false;
+  await loadAdminUsers(true);
 }
 
-async function submitBulkTimetable() {
-  const lines = parseCsvLines(document.getElementById('bulk-tt-csv').value);
-  const rows = lines.map(line => {
-    const [class_code, subject_code, faculty_email, day_of_week, start_time, end_time] = line.split(',').map(s => (s || '').trim());
-    return { class_code, subject_code, faculty_email, day_of_week, start_time, end_time };
-  });
-  const res = await api('admin_bulk_import_timetable', { rows });
-  if (!res.ok) return toast(res.error, true);
-  closeModal('modal-bulk-tt');
-  toast(`Imported ${res.imported} timetable slots!`);
-  await initAdminPortal();
-}
-
-function downloadSampleUsersCsv() {
-  downloadCsv('sample_users_import.csv', [
-    ['role', 'enrollment_no', 'roll_no', 'full_name', 'email', 'class_code', 'password'],
-    ['student', '240303105001', '62', 'Pranav Patel', 'pranav@college.edu', 'MBA3A', 'Pass@123'],
-    ['faculty', '', '', 'Dr. Sharma', 'sharma@college.edu', '', 'Pass@123']
-  ]);
-}
-
-function downloadSampleTtCsv() {
-  downloadCsv('sample_timetable_import.csv', [
-    ['class_code', 'subject_code', 'faculty_email', 'day_of_week', 'start_time', 'end_time'],
-    ['MBA3A', 'BA301', 'sharma@college.edu', '1', '09:30', '10:30']
-  ]);
-}
-
-function openSubAdminModal(userObj = null) {
-  document.getElementById('sa-id').value = userObj?.id || '';
-  document.getElementById('sa-name').value = userObj?.full_name || '';
-  document.getElementById('sa-email').value = userObj?.email || '';
-  document.getElementById('sa-pass').value = '';
-  const perms = userObj?.admin_permissions || {};
-  ADMIN_PERM_KEYS.forEach(k => {
-    document.getElementById(`perm-${k}`).checked = userObj ? Boolean(perms[k]) : (k !== 'manage_admins' && k !== 'manage_settings');
-  });
+function openSubAdminModal() {
+  ['sa-name', 'sa-email', 'sa-pass'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('modal-subadmin').classList.remove('hidden');
 }
 
-async function saveSubAdmin() {
-  const admin_permissions = {};
-  ADMIN_PERM_KEYS.forEach(k => { admin_permissions[k] = document.getElementById(`perm-${k}`).checked; });
+async function saveNewSubAdmin() {
+  const admin_permissions = {
+    manage_users: true, manage_academics: true, manage_timetable: true,
+    assign_proxy: true, approve_devices: true, manage_geofence: false,
+    manage_settings: false, view_reports: true, manage_admins: false
+  };
   const res = await api('admin_save_subadmin_perms', {
-    target_user_id: document.getElementById('sa-id').value || null,
     full_name: document.getElementById('sa-name').value,
     email: document.getElementById('sa-email').value,
     password: document.getElementById('sa-pass').value,
@@ -792,234 +1084,312 @@ async function saveSubAdmin() {
   });
   if (!res.ok) return toast(res.error, true);
   closeModal('modal-subadmin');
-  toast('Sub-Admin rights saved!');
-  await initAdminPortal();
+  toast('Sub-Admin created!');
+  await loadAdminUsers(true);
 }
 
-function fillCurrentLocation(targetId) {
-  if (!navigator.geolocation) return toast('Geolocation not supported.', true);
-  toast('Fetching current GPS coordinates...');
-  navigator.geolocation.getCurrentPosition(
-    pos => {
-      const lat = pos.coords.latitude.toFixed(6);
-      const lng = pos.coords.longitude.toFixed(6);
-      if (targetId === 'default') {
-        document.getElementById('geo-def-lat').value = lat;
-        document.getElementById('geo-def-lng').value = lng;
-        document.getElementById('geo-def-enabled').checked = true;
-      } else {
-        document.getElementById(`cgeo-lat-${targetId}`).value = lat;
-        document.getElementById(`cgeo-lng-${targetId}`).value = lng;
-        document.getElementById(`cgeo-en-${targetId}`).checked = true;
+// Admin Tab 3: Auto-IDs & Timetable Matrix
+async function loadAdminAcademics(force = false) {
+  if (LOADED_TABS.admAcademics && !force) return;
+  const res = await api('admin_tab_academics');
+  if (!res.ok) return toast(res.error, true);
+  LOADED_TABS.admAcademics = true;
+  ADM_STATE.classes = res.classes || [];
+  ADM_STATE.subjects = res.subjects || [];
+  ADM_STATE.slots = res.slots || [];
+  ADM_STATE.faculty = res.faculty || [];
+
+  document.getElementById('adm-classes-list').innerHTML = ADM_STATE.classes.map(c => `
+    <div class="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between">
+      <div><span class="font-mono font-bold text-sky-500 mr-2">${c.code}</span><b>${c.name}</b></div>
+      <button type="button" onclick="deleteAdminEntity('classes', '${c.id}')" class="text-rose-500 font-bold">Delete</button>
+    </div>
+  `).join('');
+
+  document.getElementById('adm-subjects-list').innerHTML = ADM_STATE.subjects.map(s => `
+    <div class="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between">
+      <div><span class="font-mono font-bold text-emerald-500 mr-2">${s.code}</span><b>${s.name}</b></div>
+      <button type="button" onclick="deleteAdminEntity('subjects', '${s.id}')" class="text-rose-500 font-bold">Delete</button>
+    </div>
+  `).join('');
+
+  const matrixSel = document.getElementById('matrix-class-select');
+  const prevClass = matrixSel.value;
+  matrixSel.innerHTML = ADM_STATE.classes.map(c => `<option value="${c.id}">${c.name} (${c.code})</option>`).join('');
+  if (prevClass && ADM_STATE.classes.some(c => c.id === prevClass)) {
+    matrixSel.value = prevClass;
+  }
+
+  document.getElementById('tt-subject').innerHTML = ADM_STATE.subjects.map(s => `<option value="${s.id}">${s.name} (${s.code})</option>`).join('');
+  document.getElementById('tt-faculty').innerHTML = ADM_STATE.faculty.map(f => `<option value="${f.id}">${f.faculty_code ? '[' + f.faculty_code + '] ' : ''}${f.full_name}</option>`).join('');
+  document.getElementById('tt-merged-classes').innerHTML = ADM_STATE.classes.map(c => `<option value="${c.id}">${c.code} - ${c.name}</option>`).join('');
+
+  renderTimetableMatrix();
+}
+
+async function createAdminClass() {
+  const res = await api('admin_create_class', {
+    name: document.getElementById('new-cls-name').value,
+    code: document.getElementById('new-cls-code').value
+  });
+  if (!res.ok) return toast(res.error, true);
+  document.getElementById('new-cls-name').value = '';
+  document.getElementById('new-cls-code').value = '';
+  toast(`Class created (${res.row?.code || 'Auto ID'})!`);
+  LOADED_TABS.admDashboard = false;
+  await loadAdminAcademics(true);
+}
+
+async function createAdminSubject() {
+  const res = await api('admin_create_subject', {
+    name: document.getElementById('new-sub-name').value,
+    code: document.getElementById('new-sub-code').value
+  });
+  if (!res.ok) return toast(res.error, true);
+  document.getElementById('new-sub-name').value = '';
+  document.getElementById('new-sub-code').value = '';
+  toast(`Subject created (${res.row?.code || 'Auto ID'})!`);
+  await loadAdminAcademics(true);
+}
+
+function resetTimetableForm() {
+  document.getElementById('tt-edit-slot-id').value = '';
+  document.getElementById('tt-save-btn').textContent = 'Save Slot (New Version)';
+}
+
+async function saveTimetableSlot() {
+  const selectedClassId = document.getElementById('matrix-class-select').value;
+  const mergedSelected = [...document.getElementById('tt-merged-classes').selectedOptions].map(o => o.value);
+  const classIds = [...new Set([selectedClassId, ...mergedSelected].filter(Boolean))];
+  if (!classIds.length) return toast('Select a class first.', true);
+
+  const res = await api('admin_save_timetable_slot', {
+    slot_id: document.getElementById('tt-edit-slot-id').value || null,
+    class_id: selectedClassId,
+    class_ids: classIds,
+    day_of_week: Number(document.getElementById('tt-day').value),
+    start_time: document.getElementById('tt-start').value,
+    end_time: document.getElementById('tt-end').value,
+    subject_id: document.getElementById('tt-subject').value,
+    faculty_id: document.getElementById('tt-faculty').value
+  });
+  if (!res.ok) return toast(res.error, true);
+  resetTimetableForm();
+  toast(`Saved timetable slot (Version v${res.version_no || 1})!`);
+  await loadAdminAcademics(true);
+}
+
+// Render visual Day x Time Matrix for selected class
+function renderTimetableMatrix() {
+  const classId = document.getElementById('matrix-class-select')?.value;
+  const headEl = document.getElementById('tt-matrix-head');
+  const bodyEl = document.getElementById('tt-matrix-body');
+  if (!headEl || !bodyEl) return;
+
+  const days = [
+    { d: 1, label: 'Mon' },
+    { d: 2, label: 'Tue' },
+    { d: 3, label: 'Wed' },
+    { d: 4, label: 'Thu' },
+    { d: 5, label: 'Fri' },
+    { d: 6, label: 'Sat' }
+  ];
+
+  const currentSlots = (ADM_STATE.slots || []).filter(sl => {
+    const isCur = sl.is_current !== false;
+    const cIds = sl.class_ids || [sl.class_id];
+    return isCur && (!classId || cIds.includes(classId));
+  });
+
+  const baseWindows = ['09:00-10:00', '10:00-11:00', '11:00-12:00', '12:00-13:00', '14:00-15:00', '15:00-16:00'];
+  const slotWindows = currentSlots.map(sl => `${sl.start_time}-${sl.end_time}`);
+  const allWindows = [...new Set([...baseWindows, ...slotWindows])].sort();
+
+  headEl.innerHTML = `<tr><th class="p-3">Time</th>${days.map(x => `<th class="p-3">${x.label}</th>`).join('')}</tr>`;
+
+  bodyEl.innerHTML = allWindows.map(win => {
+    const [st, et] = win.split('-');
+    const cells = days.map(dayObj => {
+      const match = currentSlots.find(sl => Number(sl.day_of_week) === dayObj.d && `${sl.start_time}-${sl.end_time}` === win);
+      if (!match) {
+        return `<td class="p-2 text-slate-400 align-top"><button type="button" onclick="prefillMatrixSlot(${dayObj.d}, '${st}', '${et}')" class="w-full py-2 rounded-lg border border-dashed border-slate-200 dark:border-slate-800 hover:border-sky-400 text-[10px]">+ Slot</button></td>`;
       }
-      toast(`Location captured (±${Math.round(pos.coords.accuracy)}m accuracy)! Click Save.`);
-    },
-    err => toast('Location error: ' + err.message, true),
-    { enableHighAccuracy: true, timeout: 10000 }
-  );
+      const mergedTag = (match.class_ids || []).length > 1 ? ' <span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 text-[9px] font-extrabold">MERGED</span>' : '';
+      return `
+        <td class="p-2 align-top">
+          <div class="p-2 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 space-y-1">
+            <div class="font-extrabold text-sky-900 dark:text-sky-200">${match.subject_name}${mergedTag}</div>
+            <div class="text-[10px] text-slate-500">${match.faculty_name} • v${match.version_no || 1}</div>
+            <div class="flex gap-2 pt-1">
+              <button type="button" onclick='editMatrixSlot(${JSON.stringify(match).replace(/'/g, "&#39;")})' class="text-[10px] font-bold text-sky-600">Edit</button>
+              <button type="button" onclick="deleteAdminEntity('timetable_slots', '${match.id}')" class="text-[10px] font-bold text-rose-500">Del</button>
+            </div>
+          </div>
+        </td>
+      `;
+    }).join('');
+    return `<tr><td class="p-3 font-mono font-bold whitespace-nowrap">${win}</td>${cells}</tr>`;
+  }).join('');
 }
 
-function renderClassGeoList() {
-  const box = document.getElementById('class-geo-list');
-  box.innerHTML = ADM_DATA.classes.map(c => `
-    <div class="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 grid grid-cols-1 md:grid-cols-6 gap-2.5 items-center">
-      <div>
-        <p class="font-bold text-xs">${c.name}</p>
-        <label class="flex items-center gap-1.5 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 mt-1">
-          <input id="cgeo-en-${c.id}" type="checkbox" ${c.custom_geo_enabled ? 'checked' : ''}>
-          Custom Priority Geo
-        </label>
-      </div>
-      <input id="cgeo-lat-${c.id}" type="number" step="any" value="${c.custom_lat || ''}" placeholder="Latitude" class="px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-mono">
-      <input id="cgeo-lng-${c.id}" type="number" step="any" value="${c.custom_lng || ''}" placeholder="Longitude" class="px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-mono">
-      <input id="cgeo-rad-${c.id}" type="number" value="${c.custom_radius_meters || 150}" placeholder="Radius (m)" class="px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-mono">
-      <button type="button" onclick="fillCurrentLocation('${c.id}')" class="px-2.5 py-1.5 bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 font-bold rounded-lg text-xs">📍 Current Loc</button>
-      <button type="button" onclick="saveClassGeo('${c.id}')" class="px-3 py-1.5 bg-indigo-600 text-white font-bold rounded-lg text-xs">Save Class Geo</button>
-    </div>
-  `).join('');
+function prefillMatrixSlot(dayNum, startStr, endStr) {
+  document.getElementById('tt-edit-slot-id').value = '';
+  document.getElementById('tt-day').value = String(dayNum);
+  document.getElementById('tt-start').value = startStr;
+  document.getElementById('tt-end').value = endStr;
+  document.getElementById('tt-save-btn').textContent = 'Save Slot (New Version)';
+  toast(`Prefilled ${startStr}–${endStr}. Pick Subject & Faculty, then click Save.`);
 }
 
-async function saveClassGeo(classId) {
-  const res = await api('admin_update_class_geo', {
-    class_id: classId,
-    custom_geo_enabled: document.getElementById(`cgeo-en-${classId}`).checked,
-    custom_lat: document.getElementById(`cgeo-lat-${classId}`).value,
-    custom_lng: document.getElementById(`cgeo-lng-${classId}`).value,
-    custom_radius_meters: document.getElementById(`cgeo-rad-${classId}`).value
-  });
+function editMatrixSlot(sl) {
+  document.getElementById('tt-edit-slot-id').value = sl.id;
+  document.getElementById('tt-day').value = String(sl.day_of_week);
+  document.getElementById('tt-start').value = sl.start_time;
+  document.getElementById('tt-end').value = sl.end_time;
+  document.getElementById('tt-subject').value = sl.subject_id;
+  document.getElementById('tt-faculty').value = sl.faculty_id;
+  document.getElementById('tt-save-btn').textContent = `Update Slot (v${Number(sl.version_no || 1) + 1})`;
+  toast('Editing slot — saving creates a new version while keeping past sessions intact.');
+}
+
+// Admin Tab 4: Sessions & Proxy
+async function loadAdminSessions(force = false) {
+  if (LOADED_TABS.admSessions && !force) return;
+  const res = await api('admin_tab_sessions_reports');
   if (!res.ok) return toast(res.error, true);
-  toast('Individual class geofence saved!');
-}
+  LOADED_TABS.admSessions = true;
+  ADM_STATE.sessions = res.sessions || [];
+  ADM_STATE.classes = res.classes || [];
+  ADM_STATE.subjects = res.subjects || [];
+  ADM_STATE.faculty = res.faculty || [];
 
-function renderDeviceRequests() {
-  const box = document.getElementById('device-req-list');
-  if (!ADM_DATA.device_requests.length) {
-    box.innerHTML = '<p class="text-slate-400">No pending device change requests.</p>';
+  document.getElementById('proxy-class').innerHTML = ADM_STATE.classes.map(c => `<option value="${c.id}">${c.name} (${c.code})</option>`).join('');
+  document.getElementById('proxy-subject').innerHTML = ADM_STATE.subjects.map(s => `<option value="${s.id}">${s.name} (${s.code})</option>`).join('');
+  document.getElementById('proxy-faculty').innerHTML = ADM_STATE.faculty.map(f => `<option value="${f.id}">${f.full_name}</option>`).join('');
+
+  const tbody = document.getElementById('adm-sessions-tbody');
+  if (!ADM_STATE.sessions.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-slate-400">No sessions recorded yet.</td></tr>';
     return;
   }
-  box.innerHTML = ADM_DATA.device_requests.map(r => `
-    <div class="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <p class="font-bold">${r.student_name} (${r.roll_no}) • ${r.classes?.name || ''}</p>
-        <p class="text-slate-500 mt-0.5">Reason: "${r.reason}" • New ID: <span class="font-mono">${r.new_device_fp}</span></p>
-      </div>
-      <div class="flex gap-2">
-        <button onclick="reviewDeviceReq('${r.id}', 'APPROVED')" class="px-3 py-1.5 bg-emerald-600 text-white font-bold rounded-lg">Approve</button>
-        <button onclick="reviewDeviceReq('${r.id}', 'REJECTED')" class="px-3 py-1.5 bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 font-bold rounded-lg">Reject</button>
-      </div>
-    </div>
+  tbody.innerHTML = ADM_STATE.sessions.map(s => `
+    <tr>
+      <td class="p-3 font-mono font-bold text-sky-500">${s.session_code}</td>
+      <td class="p-3 font-mono">${s.session_date}</td>
+      <td class="p-3 font-bold">${s.class_label}</td>
+      <td class="p-3">${s.subject_name}</td>
+      <td class="p-3">${s.faculty_name}</td>
+      <td class="p-3 text-center font-mono">${s.manual_headcount ?? '-'}</td>
+      <td class="p-3 text-center font-bold">${s.is_active ? 'LIVE' : 'CLOSED'}</td>
+      <td class="p-3 text-right">
+        ${s.is_active ? `<button type="button" onclick="forceCloseAdminSession('${s.id}')" class="px-2.5 py-1 rounded-lg bg-rose-500/15 text-rose-500 font-bold">Close</button>` : '-'}
+      </td>
+    </tr>
   `).join('');
 }
 
-async function reviewDeviceReq(requestId, decision) {
-  const res = await api('admin_review_device_req', { request_id: requestId, decision });
-  if (!res.ok) return toast(res.error, true);
-  toast(`Device request ${decision.toLowerCase()}.`);
-  await initAdminPortal();
-}
-
-function renderAuditLogs() {
-  const box = document.getElementById('admin-logs-list');
-  if (!ADM_DATA.logs.length) {
-    box.innerHTML = '<p class="text-slate-400">No security events logged yet.</p>';
-    return;
-  }
-  box.innerHTML = ADM_DATA.logs.map(l => `
-    <div class="p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 flex justify-between gap-3">
-      <span><b class="text-indigo-600 dark:text-indigo-400">[${l.event_type}]</b> ${l.details || ''}</span>
-      <span class="text-slate-400 whitespace-nowrap">${new Date(l.created_at).toLocaleString('en-IN')}</span>
-    </div>
-  `).join('');
-}
-
-function renderAcademics() {
-  document.getElementById('admin-classes-list').innerHTML = ADM_DATA.classes.map(c =>
-    `<div class="p-2.5 border border-slate-200 dark:border-slate-800 rounded-lg flex justify-between"><span><b>${c.name}</b> (${c.code})</span><button onclick="deleteEntity('classes','${c.id}')" class="text-rose-600 font-bold">Delete</button></div>`
-  ).join('');
-
-  document.getElementById('admin-subjects-list').innerHTML = ADM_DATA.subjects.map(s =>
-    `<div class="p-2.5 border border-slate-200 dark:border-slate-800 rounded-lg flex justify-between"><span><b>${s.name}</b> (${s.code})</span><button onclick="deleteEntity('subjects','${s.id}')" class="text-rose-600 font-bold">Delete</button></div>`
-  ).join('');
-
-  document.getElementById('admin-timetable-list').innerHTML = ADM_DATA.slots.map(sl =>
-    `<div class="p-2.5 border border-slate-200 dark:border-slate-800 rounded-lg flex justify-between"><span><b>${sl.classes?.name}</b> • ${sl.subjects?.name} → <b>${sl.users?.full_name}</b></span><button onclick="deleteEntity('timetable_slots','${sl.id}')" class="text-rose-600 font-bold">Remove</button></div>`
-  ).join('');
-}
-
-async function createClass() {
-  const res = await api('admin_create_entity', {
-    table: 'classes',
-    data: { name: document.getElementById('new-cls-name').value, code: document.getElementById('new-cls-code').value }
-  });
-  if (!res.ok) return toast(res.error, true);
-  await initAdminPortal();
-}
-
-async function createSubject() {
-  const res = await api('admin_create_entity', {
-    table: 'subjects',
-    data: { name: document.getElementById('new-sub-name').value, code: document.getElementById('new-sub-code').value }
-  });
-  if (!res.ok) return toast(res.error, true);
-  await initAdminPortal();
-}
-
-async function createTimetableSlot() {
-  const res = await api('admin_create_entity', {
-    table: 'timetable_slots',
-    data: {
-      class_id: document.getElementById('tt-class').value,
-      subject_id: document.getElementById('tt-subject').value,
-      faculty_id: document.getElementById('tt-faculty').value
-    }
-  });
-  if (!res.ok) return toast(res.error, true);
-  toast('Faculty assigned to class & subject!');
-  await initAdminPortal();
-}
-
-async function deleteEntity(table, id) {
-  const res = await api('admin_delete_entity', { table, id });
-  if (!res.ok) return toast(res.error, true);
-  await initAdminPortal();
-}
-
-async function assignProxyLecture() {
+async function assignProxySession() {
   const res = await api('admin_assign_proxy', {
     class_id: document.getElementById('proxy-class').value,
     subject_id: document.getElementById('proxy-subject').value,
     substitute_faculty_id: document.getElementById('proxy-faculty').value
   });
   if (!res.ok) return toast(res.error, true);
-  toast('Proxy lecture assigned & live on substitute faculty portal!');
+  toast(`Proxy session ${res.session?.session_code || ''} started!`);
+  LOADED_TABS.admDashboard = false;
+  await loadAdminSessions(true);
 }
 
-async function saveAdminSettings(clearSmtp = false) {
+async function forceCloseAdminSession(sessionId) {
+  const res = await api('close_session', { session_id: sessionId });
+  if (!res.ok) return toast(res.error, true);
+  toast('Session closed.');
+  LOADED_TABS.admDashboard = false;
+  await loadAdminSessions(true);
+}
+
+// Admin Tab 5: Devices & Logs
+async function loadAdminDevicesLogs(force = false) {
+  if (LOADED_TABS.admDevices && !force) return;
+  const res = await api('admin_tab_devices_logs');
+  if (!res.ok) return toast(res.error, true);
+  LOADED_TABS.admDevices = true;
+  ADM_STATE.deviceReqs = res.device_requests || [];
+  ADM_STATE.logs = res.logs || [];
+
+  const devBox = document.getElementById('adm-dev-list');
+  devBox.innerHTML = ADM_STATE.deviceReqs.length
+    ? ADM_STATE.deviceReqs.map(r => `
+      <div class="p-3 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <b>${r.student_name}</b> (${r.roll_no}) • Reason: "${r.reason || '-'}" • New FP: <span class="font-mono">${r.new_device_fp}</span>
+        </div>
+        <div class="flex gap-2">
+          <button type="button" onclick="reviewDeviceReq('${r.id}', 'APPROVED')" class="px-3 py-1 rounded-lg bg-emerald-600 text-white font-bold">Approve</button>
+          <button type="button" onclick="reviewDeviceReq('${r.id}', 'REJECTED')" class="px-3 py-1 rounded-lg bg-rose-600 text-white font-bold">Reject</button>
+        </div>
+      </div>
+    `).join('')
+    : '<p class="text-slate-400">No pending device change requests.</p>';
+
+  const logsBox = document.getElementById('adm-logs-list');
+  logsBox.innerHTML = ADM_STATE.logs.length
+    ? ADM_STATE.logs.map(l => `<div class="p-2 rounded-lg border border-slate-200 dark:border-slate-800"><b>[${l.event_type}]</b> ${l.details || ''}</div>`).join('')
+    : '<p class="text-slate-400">No logs yet.</p>';
+}
+
+async function reviewDeviceReq(requestId, decision) {
+  const res = await api('admin_review_device_req', { request_id: requestId, decision });
+  if (!res.ok) return toast(res.error, true);
+  toast(`Device request ${decision.toLowerCase()}.`);
+  await loadAdminDevicesLogs(true);
+}
+
+// Admin Tab 6: Settings
+function populateAdminSettingsForm() {
+  document.getElementById('set-app-title').value = SETTINGS.app_title || '';
+  document.getElementById('set-college-name').value = SETTINGS.college_name || '';
+  document.getElementById('set-default-theme').value = SETTINGS.default_theme || 'dark';
+  document.getElementById('set-geo-enabled').checked = Boolean(SETTINGS.geofence_enabled);
+  document.getElementById('set-geo-lat').value = SETTINGS.campus_lat || '';
+  document.getElementById('set-geo-lng').value = SETTINGS.campus_lng || '';
+  document.getElementById('set-geo-rad').value = SETTINGS.geofence_radius_meters || 150;
+  document.getElementById('set-smtp-email').value = SETTINGS.smtp_email || '';
+  document.getElementById('set-smtp-pass').value = '';
+}
+
+async function saveAdminSettings() {
   const patch = {
     app_title: document.getElementById('set-app-title').value,
     college_name: document.getElementById('set-college-name').value,
-    logo_url: document.getElementById('set-logo-url').value,
-    allow_extra_lectures: document.getElementById('set-extra-lec').checked,
-    geofence_enabled: document.getElementById('geo-def-enabled').checked,
-    campus_lat: document.getElementById('geo-def-lat').value || null,
-    campus_lng: document.getElementById('geo-def-lng').value || null,
-    geofence_radius_meters: document.getElementById('geo-def-rad').value || 150,
+    default_theme: document.getElementById('set-default-theme').value,
+    geofence_enabled: document.getElementById('set-geo-enabled').checked,
+    campus_lat: document.getElementById('set-geo-lat').value || null,
+    campus_lng: document.getElementById('set-geo-lng').value || null,
+    geofence_radius_meters: document.getElementById('set-geo-rad').value || 150,
     smtp_email: document.getElementById('set-smtp-email').value,
-    smtp_app_password: document.getElementById('set-smtp-pass').value,
-    clear_smtp: clearSmtp
+    smtp_app_password: document.getElementById('set-smtp-pass').value
   };
   const res = await api('admin_save_settings', { patch });
   if (!res.ok) return toast(res.error, true);
-  toast('System settings saved!');
-  await initApp();
+  SETTINGS = { ...SETTINGS, ...patch };
+  applyTheme(patch.default_theme);
+  toast('Settings saved!');
 }
 
 async function testAdminSmtp() {
   const res = await api('admin_test_smtp');
   if (!res.ok) return toast(res.error, true);
-  toast('Test email sent to your Admin inbox!');
+  toast('SMTP test email sent!');
 }
 
-function clearAdminSmtp() {
-  document.getElementById('set-smtp-email').value = '';
-  document.getElementById('set-smtp-pass').value = '';
-  saveAdminSettings(true);
-}
-
-async function exportAdminFullBackup() {
-  const res = await api('admin_export_backup');
+async function deleteAdminEntity(table, id) {
+  const res = await api('admin_delete_entity', { table, id });
   if (!res.ok) return toast(res.error, true);
-  const clsMap = Object.fromEntries(res.classes.map(c => [c.id, c.name]));
-  const subMap = Object.fromEntries(res.subjects.map(s => [s.id, s.name]));
-  const stuMap = Object.fromEntries(res.students.map(st => [st.id, st]));
-  const sesMap = Object.fromEntries(res.sessions.map(se => [se.id, se]));
-
-  const rows = [['Date', 'Class', 'Subject', 'Type', 'Enrollment No', 'Roll No', 'Student Name', 'Status', 'Marked Via']];
-  res.records.forEach(r => {
-    const se = sesMap[r.session_id] || {};
-    const st = stuMap[r.student_id] || {};
-    rows.push([
-      se.session_date || '',
-      clsMap[se.class_id] || '',
-      subMap[se.subject_id] || '',
-      se.session_type || 'REGULAR',
-      st.enrollment_no || '',
-      st.roll_no || '',
-      st.full_name || '',
-      r.status,
-      r.marked_via || 'QR'
-    ]);
-  });
-  downloadCsv('smartqr_full_semester_backup.csv', rows);
-}
-
-function downloadCsv(filename, rows) {
-  const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
+  toast('Deleted.');
+  LOADED_TABS.admDashboard = false;
+  if (table === 'users') await loadAdminUsers(true);
+  else await loadAdminAcademics(true);
 }
 
 window.addEventListener('DOMContentLoaded', initApp);
