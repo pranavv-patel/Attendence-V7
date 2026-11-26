@@ -729,7 +729,7 @@ module.exports = async (req, res) => {
           current_nonce: nonce,
           is_active: true,
           session_type: stype,
-          geofence_override: typeof body.geofence_override === 'boolean' ? body.geofence_override : null
+          geofence_override: typeof body.geofence_override === 'boolean' ? body.geofence_override : false
         })
       });
 
@@ -1287,6 +1287,11 @@ module.exports = async (req, res) => {
 
       if (!mergedIds.length || !subjectId || !facultyId) {
         return res.status(400).json({ ok: false, error: 'Select class(es), subject, and faculty.' });
+      }
+      const setRows = await sbFetch('system_settings?id=eq.1&select=max_merge_classes');
+      const maxMerge = Number(setRows[0]?.max_merge_classes) || 5;
+      if (mergedIds.length > maxMerge) {
+        return res.status(400).json({ ok: false, error: `Maximum ${maxMerge} merged classes allowed (change limit in Admin Settings).` });
       }
 
       const ist = getISTClock();

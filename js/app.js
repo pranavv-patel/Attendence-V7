@@ -8,6 +8,8 @@ let LAST_RENDERED_NONCE = '';
 let LAST_FAC_ROSTER_SIG = '';
 let LAST_CR_ROSTER_SIG = '';
 let LAST_EXPORT_ROWS = [];
+let ADM_EDIT_ATT = { sessionId: null, session: null, roster: [] };
+let STU_ATT_OK_TIMER = null;
 
 const LOADED_TABS = {
   crToday: false, facLiveSetup: false, facClasses: false, facMatrix: false,
@@ -265,12 +267,43 @@ async function submitStudentQr(rawText) {
       document.getElementById('stu-scan-status').textContent = res.message || res.error;
       return toast(res.message || res.error, true);
     }
-    document.getElementById('stu-scan-status').textContent = 'Attendance Marked Present (P) ✓';
-    toast('Attendance Marked Present (P)!');
+    document.getElementById('stu-scan-status').textContent = 'Ready to scan';
+    showStuAttOkPopup();
   };
-  if (SETTINGS.geofence_enabled && navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(p => send(p.coords.latitude, p.coords.longitude), () => send(null, null), { enableHighAccuracy: true, timeout: 6000 });
-  } else { await send(null, null); }
+  if (SETTINGS.geofence_enabled) {
+    if (!navigator.geolocation) {
+      document.getElementById('stu-scan-status').textContent = 'GPS not supported on this browser.';
+      return toast('Location is required by Admin GPS Geofencing.', true);
+    }
+    document.getElementById('stu-scan-status').textContent = 'Requesting location permission...';
+    navigator.geolocation.getCurrentPosition(
+      p => send(p.coords.latitude, p.coords.longitude),
+      () => {
+        document.getElementById('stu-scan-status').textContent = 'Location permission denied. Allow GPS and scan again.';
+        send(null, null);
+      },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+    );
+  } else {
+    await send(null, null);
+  }
+}
+
+function closeStuAttOkModal() {
+  if (STU_ATT_OK_TIMER) { clearInterval(STU_ATT_OK_TIMER); STU_ATT_OK_TIMER = null; }
+  closeModal('modal-stu-att-ok');
+}
+
+function showStuAttOkPopup() {
+  closeStuAttOkModal();
+  let sec = 15;
+  document.getElementById('stu-att-ok-sec').textContent = String(sec);
+  openModal('modal-stu-att-ok');
+  STU_ATT_OK_TIMER = setInterval(() => {
+    sec--;
+    if (sec <= 0) { closeStuAttOkModal(); }
+    else { document.getElementById('stu-att-ok-sec').textContent = String(sec); }
+  }, 1000);
 }
 
 function validateStudentPasswordMatch() {
@@ -712,7 +745,7 @@ async function refreshSessionMonitorData(sessionId, mode) {
     document.getElementById('fac-live-panel').classList.remove('hidden');
     document.getElementById('fac-live-code').textContent = s.session_code;
     document.getElementById('fac-live-title').textContent = `${s.subject_name} (${s.subject_code}) · ${s.class_label}`;
-    document.getElementById('fac-geo-toggle').checked = s.geofence_override === true || (s.geofence_override === null && Boolean(SETTINGS.geofence_enabled));
+    document.getElementById('fac-geo-toggle').checked = s.geofence_override === true;
     if (LAST_RENDERED_NONCE !== `${s.id}:${s.current_nonce}`) {
       LAST_RENDERED_NONCE = `${s.id}:${s.current_nonce}`;
       renderQrElement('fac-qr-box', s.id, s.current_nonce);
@@ -750,21 +783,50 @@ async function saveHeadcount(prefix) {
   toast('Manual headcount saved.');
 }
 
+function sortRosterByClassAndRoll(roster, sessionClassIds) {
+  const orderMap = new Map((sessionClassIds || []).map((id, idx) => [id, idx]));
+  return [...(roster || [])].sort((a, b) => {
+    const ca = orderMap.has(a.class_id) ? orderMap.get(a.class_id) : 999;
+    const cb = orderMap.has(b.class_id) ? orderMap.get(b.class_id) : 999;
+    if (ca !== cb) return ca - cb;
+    const clsCmp = String(a.class_code || a.class_name || '').localeCompare(String(b.class_code || b.class_name || ''), undefined, { numeric: true });
+    if (clsCmp !== 0) return clsCmp;
+    const rollCmp = String(a.roll_no || a.enrollment_no || '').localeCompare(String(b.roll_no || b.enrollment_no || ''), undefined, { numeric: true });
+    if (rollCmp !== 0) return rollCmp;
+    return String(a.full_name || '').localeCompare(String(b.full_name || ''));
+  });
+}
+
+function buildGroupedRosterRowsHtml(roster, sessionClassIds, tickFnName) {
+  const sorted = sortRosterByClassAndRoll(roster, sessionClassIds);
+  const uniqueClasses = new Set(sorted.map(x => x.class_id));
+  const showHeaders = uniqueClasses.size > 1;
+  let lastCls = null;
+  let html = '';
+  for (const st of sorted) {
+    if (showHeaders && st.class_id !== lastCls) {
+      lastCls = st.class_id;
+      html += `<tr style="background:rgba(56,189,248,0.08);"><td colspan="6" style="font-weight:800;color:var(--accent);font-size:0.74rem;text-transform:uppercase;padding:8px 14px;">${st.class_name || st.class_code || 'Class'} ${st.class_code ? '(' + st.class_code + ')' : ''}</td></tr>`;
+    }
+    html += `
+      <tr>
+        <td class="mono"><strong>${st.roll_no || '-'}</strong> <span style="color:var(--text-mute);">(${st.enrollment_no || '-'})</span></td>
+        <td><strong>${st.full_name}</strong> ${st.role === 'cr' ? '<span class="pill amber">CR</span>' : ''}</td>
+        <td>${st.class_code || st.class_name || '-'}</td>
+        <td><input type="checkbox" ${st.status === 'P' ? 'checked' : ''} onchange="${tickFnName}('${st.id}','P',this.checked)" style="width:17px;height:17px;cursor:pointer;"></td>
+        <td><input type="checkbox" ${st.status === 'OD' ? 'checked' : ''} onchange="${tickFnName}('${st.id}','OD',this.checked)" style="width:17px;height:17px;cursor:pointer;"></td>
+        <td><span class="pill ${st.status === 'P' ? 'green' : st.status === 'OD' ? 'amber' : 'red'}">${st.status}</span></td>
+      </tr>`;
+  }
+  return html || '<tr><td colspan="6" style="text-align:center;">No students found.</td></tr>';
+}
+
 function renderLiveRoster() {
   const q = (document.getElementById('fac-roster-search')?.value || '').trim().toLowerCase();
   const list = (FAC_STATE.roster || []).filter(st =>
     !q || (st.roll_no || '').toLowerCase().includes(q) || (st.enrollment_no || '').toLowerCase().includes(q) || (st.full_name || '').toLowerCase().includes(q) || (st.class_code || '').toLowerCase().includes(q)
   );
-  document.getElementById('fac-manual-tbody').innerHTML = list.map(st => `
-    <tr>
-      <td class="mono"><strong>${st.roll_no || '-'}</strong> <span style="color:var(--text-mute);">(${st.enrollment_no || '-'})</span></td>
-      <td><strong>${st.full_name}</strong> ${st.role === 'cr' ? '<span class="pill amber">CR</span>' : ''}</td>
-      <td>${st.class_code || st.class_name || '-'}</td>
-      <td><input type="checkbox" ${st.status === 'P' ? 'checked' : ''} onchange="onFacultyManualTick('${st.id}','P',this.checked)" style="width:17px;height:17px;cursor:pointer;"></td>
-      <td><input type="checkbox" ${st.status === 'OD' ? 'checked' : ''} onchange="onFacultyManualTick('${st.id}','OD',this.checked)" style="width:17px;height:17px;cursor:pointer;"></td>
-      <td><span class="pill ${st.status === 'P' ? 'green' : st.status === 'OD' ? 'amber' : 'red'}">${st.status}</span></td>
-    </tr>
-  `).join('');
+  document.getElementById('fac-manual-tbody').innerHTML = buildGroupedRosterRowsHtml(list, FAC_STATE.liveSession?.class_ids, 'onFacultyManualTick');
 }
 
 async function onFacultyManualTick(studentId, targetStatus, checked) {
@@ -890,23 +952,41 @@ async function loadAdminUsers(force = false) {
 function renderAdminUsersTable() {
   const q = (document.getElementById('adm-user-search')?.value || '').trim().toLowerCase();
   const rf = document.getElementById('adm-user-role-filter')?.value || 'ALL';
-  const rows = (ADM_STATE.users || []).filter(u => (rf === 'ALL' || u.role === rf) && (!q || (u.full_name || '').toLowerCase().includes(q) || (u.enrollment_no || '').toLowerCase().includes(q) || (u.roll_no || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q) || (u.faculty_code || '').toLowerCase().includes(q)));
+  const roleOrder = { admin: 1, faculty: 2, cr: 3, student: 4 };
+  const rows = (ADM_STATE.users || []).filter(u => (rf === 'ALL' || u.role === rf) && (!q || (u.full_name || '').toLowerCase().includes(q) || (u.enrollment_no || '').toLowerCase().includes(q) || (u.roll_no || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q) || (u.faculty_code || '').toLowerCase().includes(q) || (u.device_fp || '').toLowerCase().includes(q)));
+  rows.sort((a, b) => {
+    const ra = roleOrder[a.role] || 9, rb = roleOrder[b.role] || 9;
+    if (ra !== rb) return ra - rb;
+    const ca = String(a.classes?.code || a.classes?.name || '').localeCompare(String(b.classes?.code || b.classes?.name || ''), undefined, { numeric: true });
+    if (ca !== 0) return ca;
+    const rollA = String(a.roll_no || a.faculty_code || a.enrollment_no || '');
+    const rollB = String(b.roll_no || b.faculty_code || b.enrollment_no || '');
+    const rCmp = rollA.localeCompare(rollB, undefined, { numeric: true });
+    if (rCmp !== 0) return rCmp;
+    return String(a.full_name || '').localeCompare(String(b.full_name || ''));
+  });
   document.getElementById('adm-users-tbody').innerHTML = rows.length ? rows.map(u => {
     const pCls = u.role === 'cr' ? 'amber' : u.role === 'faculty' ? 'blue' : u.role === 'admin' ? 'purple' : 'green';
     const ids = [u.faculty_code ? `<b>${u.faculty_code}</b>` : '', u.enrollment_no ? `Enroll: <b>${u.enrollment_no}</b>` : '', u.roll_no ? `Roll: <b>${u.roll_no}</b>` : '', u.email || ''].filter(Boolean).join(' · ');
+    const devHtml = (u.role === 'student' || u.role === 'cr')
+      ? (u.device_fp
+          ? `<span class="pill green">Device Bound</span><div class="mono" style="font-size:0.68rem;color:var(--text-mute);margin-top:3px;">${u.device_fp}</div>`
+          : `<span class="pill amber">Device Unbound</span>`)
+      : '<span style="color:var(--text-mute);font-size:0.74rem;">N/A</span>';
     return `
       <tr>
         <td><span class="pill ${pCls}">${u.role.toUpperCase()}</span></td>
         <td><strong>${u.full_name}</strong></td>
         <td>${ids || '-'}</td>
         <td>${u.classes?.name || '-'}</td>
+        <td>${devHtml}</td>
         <td style="white-space:nowrap;">
           <button type="button" onclick="openEditUserById('${u.id}')" class="btn btn-ghost" style="padding:5px 10px;">Edit</button>
           ${!u.is_super_admin ? `<button type="button" onclick="deleteAdminEntity('users','${u.id}')" class="btn btn-danger" style="padding:5px 10px;">Delete</button>` : ''}
         </td>
       </tr>
     `;
-  }).join('') : '<tr><td colspan="5" style="text-align:center;">No users found.</td></tr>';
+  }).join('') : '<tr><td colspan="6" style="text-align:center;">No users found.</td></tr>';
 }
 
 async function createAdminUser() {
@@ -1105,10 +1185,9 @@ async function loadAdminAcademics(force = false) {
   const prev = mSel.value;
   mSel.innerHTML = ADM_STATE.classes.map(c => `<option value="${c.id}">${c.name} (${c.code})</option>`).join('');
   if (prev && ADM_STATE.classes.some(c => c.id === prev)) mSel.value = prev;
+  document.getElementById('tt-primary-class').innerHTML = ADM_STATE.classes.map(c => `<option value="${c.id}">${c.name} (${c.code})</option>`).join('');
   document.getElementById('tt-subject').innerHTML = ADM_STATE.subjects.map(s => `<option value="${s.id}">${s.name} (${s.code})</option>`).join('');
   document.getElementById('tt-faculty').innerHTML = ADM_STATE.faculty.map(f => `<option value="${f.id}">${f.faculty_code ? '[' + f.faculty_code + '] ' : ''}${f.full_name}</option>`).join('');
-  document.getElementById('tt-merged-classes').innerHTML = ADM_STATE.classes.map(c => `<option value="${c.id}">${c.code} - ${c.name}</option>`).join('');
-  document.getElementById('tt-merged-classes').selectedIndex = -1;
   renderTimetableMatrix();
 }
 
@@ -1126,22 +1205,77 @@ async function createAdminSubject() {
   toast(`Subject created (${res.row?.code || 'Auto'})!`); await loadAdminAcademics(true);
 }
 
-function resetTimetableForm() { document.getElementById('tt-edit-slot-id').value = ''; document.getElementById('tt-save-btn').textContent = 'Save Slot (New Version)'; }
+function getMaxMergeClasses() { return Math.max(2, Number(SETTINGS.max_merge_classes) || 5); }
+
+function toggleTtMergeArea() {
+  const on = document.getElementById('tt-merge-toggle').checked;
+  document.getElementById('tt-merge-area').classList.toggle('hidden', !on);
+  if (on && !document.getElementById('tt-merge-rows').children.length) addTtMergeRow();
+  updateTtMergeLimitHint();
+}
+
+function updateTtMergeLimitHint() {
+  const maxM = getMaxMergeClasses();
+  const extraCount = document.getElementById('tt-merge-rows').children.length;
+  const total = 1 + extraCount;
+  document.getElementById('tt-merge-limit-hint').textContent = `Total classes in slot: ${total} / ${maxM} max (configurable in Performance & Timers)`;
+  document.getElementById('btn-tt-add-merge').disabled = total >= maxM;
+}
+
+function addTtMergeRow(selectedId = '') {
+  const maxM = getMaxMergeClasses();
+  const container = document.getElementById('tt-merge-rows');
+  if (1 + container.children.length >= maxM) return toast(`Max ${maxM} merged classes reached.`, true);
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  const opts = ADM_STATE.classes.map(c => `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${c.name} (${c.code})</option>`).join('');
+  row.innerHTML = `<select class="input-box tt-extra-cls-sel">${opts}</select><button type="button" onclick="this.parentElement.remove();updateTtMergeLimitHint();" class="btn btn-danger" style="padding:8px 10px;">✕</button>`;
+  container.appendChild(row);
+  updateTtMergeLimitHint();
+}
+
+function openTimetableModal(dayNum = 1, startStr = '09:00', endStr = '10:00', slotObj = null) {
+  const curClass = document.getElementById('matrix-class-select')?.value || ADM_STATE.classes[0]?.id || '';
+  document.getElementById('tt-edit-slot-id').value = slotObj ? slotObj.id : '';
+  document.getElementById('tt-modal-title').textContent = slotObj ? `Edit Lecture Slot (v${Number(slotObj.version_no || 1) + 1})` : 'Assign Lecture Slot';
+  document.getElementById('tt-save-btn').textContent = slotObj ? `Update Slot (v${Number(slotObj.version_no || 1) + 1})` : 'Save Lecture Slot';
+  document.getElementById('tt-primary-class').value = slotObj ? slotObj.class_id : curClass;
+  document.getElementById('tt-day').value = String(slotObj ? slotObj.day_of_week : dayNum);
+  document.getElementById('tt-start').value = slotObj ? slotObj.start_time : startStr;
+  document.getElementById('tt-end').value = slotObj ? slotObj.end_time : endStr;
+  if (slotObj) {
+    document.getElementById('tt-subject').value = slotObj.subject_id;
+    document.getElementById('tt-faculty').value = slotObj.faculty_id;
+  }
+  const mergeRows = document.getElementById('tt-merge-rows');
+  mergeRows.innerHTML = '';
+  const extraIds = slotObj ? (slotObj.class_ids || []).filter(id => id !== slotObj.class_id) : [];
+  document.getElementById('tt-merge-toggle').checked = extraIds.length > 0;
+  document.getElementById('tt-merge-area').classList.toggle('hidden', extraIds.length === 0);
+  extraIds.forEach(id => addTtMergeRow(id));
+  updateTtMergeLimitHint();
+  openModal('modal-tt-slot');
+}
 
 async function saveTimetableSlot() {
-  const selectedClassId = document.getElementById('matrix-class-select').value;
-  const merged = [...document.getElementById('tt-merged-classes').selectedOptions].map(o => o.value);
-  const classIds = [...new Set([selectedClassId, ...merged].filter(Boolean))];
-  if (!classIds.length) return toast('Select a class first.', true);
+  const primaryClassId = document.getElementById('tt-primary-class').value;
+  if (!primaryClassId) return toast('Select a primary class.', true);
+  let classIds = [primaryClassId];
+  if (document.getElementById('tt-merge-toggle').checked) {
+    const extras = [...document.querySelectorAll('.tt-extra-cls-sel')].map(s => s.value).filter(Boolean);
+    classIds = [...new Set([primaryClassId, ...extras])];
+  }
   const res = await api('admin_save_timetable_slot', {
     slot_id: document.getElementById('tt-edit-slot-id').value || null,
-    class_id: selectedClassId, class_ids: classIds,
+    class_id: primaryClassId, class_ids: classIds,
     day_of_week: Number(document.getElementById('tt-day').value),
     start_time: document.getElementById('tt-start').value, end_time: document.getElementById('tt-end').value,
     subject_id: document.getElementById('tt-subject').value, faculty_id: document.getElementById('tt-faculty').value
   });
   if (!res.ok) return toast(res.error, true);
-  resetTimetableForm(); toast(`Slot saved (v${res.version_no || 1})!`); await loadAdminAcademics(true);
+  closeModal('modal-tt-slot');
+  toast(`Slot saved (v${res.version_no || 1})!`);
+  await loadAdminAcademics(true);
 }
 
 function renderTimetableMatrix() {
@@ -1167,21 +1301,12 @@ function renderTimetableMatrix() {
   }).join('');
 }
 
-function prefillMatrixSlot(d, st, et) {
-  document.getElementById('tt-edit-slot-id').value = '';
-  document.getElementById('tt-day').value = String(d); document.getElementById('tt-start').value = st; document.getElementById('tt-end').value = et;
-  toast(`Selected ${st}–${et}. Pick Subject & Faculty, then Save.`);
-}
+function prefillMatrixSlot(d, st, et) { openTimetableModal(d, st, et, null); }
 
 function editMatrixSlotById(slotId) {
   const sl = (ADM_STATE.slots || []).find(x => x.id === slotId);
   if (!sl) return;
-  document.getElementById('tt-edit-slot-id').value = sl.id;
-  document.getElementById('tt-day').value = String(sl.day_of_week);
-  document.getElementById('tt-start').value = sl.start_time; document.getElementById('tt-end').value = sl.end_time;
-  document.getElementById('tt-subject').value = sl.subject_id; document.getElementById('tt-faculty').value = sl.faculty_id;
-  document.getElementById('tt-save-btn').textContent = `Update Slot (v${Number(sl.version_no || 1) + 1})`;
-  toast('Editing slot — saving creates a new version.');
+  openTimetableModal(sl.day_of_week, sl.start_time, sl.end_time, sl);
 }
 
 // Admin Tab 4: Sessions & Proxy
@@ -1203,7 +1328,10 @@ async function loadAdminSessions(force = false) {
       <td>${s.subject_name}</td><td>${s.faculty_name}</td>
       <td class="mono">${s.manual_headcount ?? '-'}</td>
       <td><span class="pill ${s.is_active ? 'green' : 'blue'}">${s.is_active ? 'LIVE' : 'CLOSED'}</span></td>
-      <td>${s.is_active ? `<button type="button" onclick="forceCloseAdminSession('${s.id}')" class="btn btn-danger" style="padding:4px 10px;">Close</button>` : '-'}</td>
+      <td style="white-space:nowrap;">
+        <button type="button" onclick="openAdminEditAttModal('${s.id}')" class="btn btn-primary" style="padding:4px 10px;">Edit Attendance</button>
+        ${s.is_active ? `<button type="button" onclick="forceCloseAdminSession('${s.id}')" class="btn btn-danger" style="padding:4px 10px;margin-left:4px;">Close</button>` : ''}
+      </td>
     </tr>
   `).join('') : '<tr><td colspan="8" style="text-align:center;">No sessions yet.</td></tr>';
 }
@@ -1216,6 +1344,40 @@ async function assignProxySession() {
   });
   if (!res.ok) return toast(res.error, true);
   toast(`Proxy ${res.session?.session_code || ''} started!`); LOADED_TABS.admDashboard = false; await loadAdminSessions(true);
+}
+
+async function openAdminEditAttModal(sessionId) {
+  const res = await api('session_roster', { session_id: sessionId });
+  if (!res.ok) return toast(res.error, true);
+  ADM_EDIT_ATT = { sessionId, session: res.session, roster: res.roster || [] };
+  document.getElementById('adm-ea-title').textContent = `Edit Attendance · ${res.session.session_code}`;
+  document.getElementById('adm-ea-sub').textContent = `${res.session.session_date} · ${res.session.subject_name} · ${res.session.class_label}`;
+  document.getElementById('adm-ea-search').value = '';
+  renderAdminEditAttTable();
+  openModal('modal-adm-edit-att');
+}
+
+function renderAdminEditAttTable() {
+  const q = (document.getElementById('adm-ea-search')?.value || '').trim().toLowerCase();
+  const list = (ADM_EDIT_ATT.roster || []).filter(st =>
+    !q || (st.roll_no || '').toLowerCase().includes(q) || (st.enrollment_no || '').toLowerCase().includes(q) || (st.full_name || '').toLowerCase().includes(q) || (st.class_code || '').toLowerCase().includes(q)
+  );
+  document.getElementById('adm-ea-tbody').innerHTML = buildGroupedRosterRowsHtml(list, ADM_EDIT_ATT.session?.class_ids, 'onAdminEditAttTick');
+}
+
+async function onAdminEditAttTick(studentId, targetStatus, checked) {
+  if (!ADM_EDIT_ATT.sessionId) return;
+  const nextStatus = checked ? targetStatus : 'A';
+  const row = (ADM_EDIT_ATT.roster || []).find(st => st.id === studentId);
+  const prevStatus = row ? row.status : 'A';
+  if (row) { row.status = nextStatus; renderAdminEditAttTable(); }
+  const r = await api('set_student_tick', { session_id: ADM_EDIT_ATT.sessionId, student_id: studentId, status: nextStatus });
+  if (!r.ok) {
+    if (row) { row.status = prevStatus; renderAdminEditAttTable(); }
+    return toast(r.error, true);
+  }
+  LOADED_TABS.admDashboard = false;
+  toast('Attendance updated by Admin.');
 }
 
 async function forceCloseAdminSession(id) {
@@ -1336,13 +1498,15 @@ function populateAdminPerformanceForm() {
   document.getElementById('perf-poll-timer').value = pSec;
   document.getElementById('perf-poll-val').textContent = pSec + 's';
   document.getElementById('perf-sess-timeout').value = SETTINGS.session_timeout_minutes || 60;
+  document.getElementById('perf-max-merge').value = SETTINGS.max_merge_classes || 5;
 }
 
 async function saveAdminPerformance() {
   const patch = {
     qr_interval_seconds: Number(document.getElementById('perf-qr-timer').value) || 15,
     poll_interval_seconds: Number(document.getElementById('perf-poll-timer').value) || 4,
-    session_timeout_minutes: Number(document.getElementById('perf-sess-timeout').value) || 60
+    session_timeout_minutes: Number(document.getElementById('perf-sess-timeout').value) || 60,
+    max_merge_classes: Math.min(10, Math.max(2, Number(document.getElementById('perf-max-merge').value) || 5))
   };
   const r = await api('admin_save_settings', { patch });
   if (!r.ok) return toast(r.error, true);

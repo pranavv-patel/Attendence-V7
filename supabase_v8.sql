@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
   default_theme TEXT DEFAULT 'dark',
   qr_interval_seconds INT DEFAULT 15,
   poll_interval_seconds INT DEFAULT 4,
+  max_merge_classes INT DEFAULT 5,
   session_timeout_minutes INT DEFAULT 60,
   enforce_lecture_time BOOLEAN DEFAULT FALSE,
   allow_extra_lectures BOOLEAN DEFAULT TRUE,
@@ -173,7 +174,8 @@ ALTER TABLE system_settings
   ADD COLUMN IF NOT EXISTS smtp_email TEXT DEFAULT '',
   ADD COLUMN IF NOT EXISTS smtp_app_password TEXT DEFAULT '',
   ADD COLUMN IF NOT EXISTS allow_extra_lectures BOOLEAN DEFAULT TRUE,
-  ADD COLUMN IF NOT EXISTS poll_interval_seconds INT DEFAULT 4;
+  ADD COLUMN IF NOT EXISTS poll_interval_seconds INT DEFAULT 4,
+  ADD COLUMN IF NOT EXISTS max_merge_classes INT DEFAULT 5;
 
 ALTER TABLE classes
   ADD COLUMN IF NOT EXISTS semester TEXT DEFAULT '';
@@ -526,7 +528,7 @@ BEGIN
     v_target_rad := COALESCE(v_set.geofence_radius_meters, 150);
   END IF;
 
-  v_geo_active := COALESCE(v_sess.geofence_override, v_cls.custom_geo_enabled, v_set.geofence_enabled, FALSE);
+  v_geo_active := COALESCE(v_set.geofence_enabled, FALSE) AND COALESCE(v_sess.geofence_override, FALSE);
 
   IF v_geo_active AND v_target_lat IS NOT NULL AND v_target_lng IS NOT NULL THEN
     IF p_lat IS NULL OR p_lng IS NULL THEN
@@ -569,6 +571,7 @@ BEGIN
     END,
     qr_interval_seconds = COALESCE((p_patch->>'qr_interval_seconds')::INT, qr_interval_seconds),
     poll_interval_seconds = COALESCE((p_patch->>'poll_interval_seconds')::INT, poll_interval_seconds),
+    max_merge_classes = COALESCE((p_patch->>'max_merge_classes')::INT, max_merge_classes),
     session_timeout_minutes = COALESCE((p_patch->>'session_timeout_minutes')::INT, session_timeout_minutes),
     enforce_lecture_time = COALESCE((p_patch->>'enforce_lecture_time')::BOOLEAN, enforce_lecture_time),
     allow_extra_lectures = COALESCE((p_patch->>'allow_extra_lectures')::BOOLEAN, allow_extra_lectures),

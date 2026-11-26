@@ -1,7 +1,7 @@
 {
   "name": "smartqr-attendance-v8",
-  "version": "8.3.0",
-  "description": "SmartQR Attendance v8.3 - Performance Tab, Custom Poll & QR Timers, Faculty Device Approval, 1-Session Lock & Speed Optimizations",
+  "version": "8.4.0",
+  "description": "SmartQR Attendance v8.4 - Popup Timetable Builder, Dynamic Merge Limit, Device Bound Column, Dual GPS Switch, Admin Attendance Editor & 15s Student Confirmation Popup",
   "private": true,
   "dependencies": {
     "nodemailer": "^6.9.15"

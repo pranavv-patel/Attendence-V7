@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SmartQR Attendance v8.3</title>
+<title>SmartQR Attendance v8.4</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 <style>
@@ -260,6 +260,12 @@
   .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
   .modal-head h3 { font-size: 1rem; font-weight: 700; }
   .perm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 10px; border-radius: 10px; background: var(--bg-3); border: 1px solid var(--border); font-size: 0.76rem; margin-bottom: 14px; }
+  .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; inset: 0; background: var(--bg-3); border: 1px solid var(--border); border-radius: 999px; transition: 0.25s; }
+  .slider:before { content: ""; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px; background: var(--text-mute); border-radius: 50%; transition: 0.25s; }
+  .switch input:checked + .slider { background: rgba(34,197,94,0.22); border-color: var(--green); }
+  .switch input:checked + .slider:before { transform: translateX(20px); background: var(--green); }
   .perm-grid label { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text); }
 
   @media print {
@@ -544,9 +550,10 @@
                 <div id="fac-qr-box" class="qr-canvas"></div>
                 <div id="fac-qr-clock" class="mono" style="color:var(--green);font-size:0.82rem;margin-bottom:10px;">--:--:-- IST</div>
                 <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px;align-items:center;">
-                  <label style="font-size:0.78rem;font-weight:700;display:flex;align-items:center;gap:6px;cursor:pointer;">
-                    <input id="fac-geo-toggle" type="checkbox" onchange="toggleFacultyGeo()"> GPS
-                  </label>
+                  <div style="display:flex;align-items:center;gap:8px;padding:4px 10px;border-radius:9px;background:var(--bg-3);border:1px solid var(--border);">
+                    <span style="font-size:0.74rem;font-weight:700;">GPS</span>
+                    <label class="switch"><input id="fac-geo-toggle" type="checkbox" onchange="toggleFacultyGeo()"><span class="slider"></span></label>
+                  </div>
                   <button type="button" onclick="openProjectorMode()" class="btn btn-ghost">Projector</button>
                   <button type="button" id="fac-pause-btn" onclick="togglePauseQr()" class="btn btn-amber">Pause QR</button>
                   <button type="button" onclick="closeActiveSession()" class="btn btn-danger">End Session</button>
@@ -642,7 +649,7 @@
         <div class="sidebar-logo"><img src="assets/logo.png" onerror="this.style.display='none';this.parentElement.textContent='QR';" alt="QR"></div>
         <div>
           <h2>QR <span>Attend</span></h2>
-          <small>Admin Console v8.3</small>
+          <small>Admin Console v8.4</small>
         </div>
       </div>
 
@@ -756,7 +763,7 @@
 
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Role</th><th>Name</th><th>Identifiers / FAC-ID</th><th>Class</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Role</th><th>Name</th><th>Identifiers / FAC-ID</th><th>Class</th><th>Device Status</th><th>Actions</th></tr></thead>
               <tbody id="adm-users-tbody"></tbody>
             </table>
           </div>
@@ -794,22 +801,9 @@
               </div>
               <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 <select id="matrix-class-select" onchange="renderTimetableMatrix()" class="input-box" style="width:auto;"></select>
+                <button type="button" onclick="openTimetableModal()" class="btn btn-green">+ Add Lecture</button>
                 <button type="button" onclick="openModal('modal-bulk-tt')" class="btn btn-primary">⬆ Bulk Import Timetables (CSV)</button>
               </div>
-            </div>
-
-            <div class="grid-6" style="margin-bottom:12px;">
-              <input type="hidden" id="tt-edit-slot-id">
-              <select id="tt-day" class="input-box"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select>
-              <input id="tt-start" type="time" value="09:00" class="input-box">
-              <input id="tt-end" type="time" value="10:00" class="input-box">
-              <select id="tt-subject" class="input-box"></select>
-              <select id="tt-faculty" class="input-box"></select>
-              <select id="tt-merged-classes" multiple size="2" class="input-box" title="Hold Ctrl to merge 2+ classes"></select>
-            </div>
-            <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:16px;">
-              <button type="button" onclick="resetTimetableForm()" class="btn btn-ghost">Clear</button>
-              <button type="button" id="tt-save-btn" onclick="saveTimetableSlot()" class="btn btn-primary">Save Slot (New Version)</button>
             </div>
 
             <div class="table-wrap">
@@ -904,9 +898,15 @@
               </div>
             </div>
             <div class="grid-2" style="margin-bottom:18px;">
-              <div class="field" style="margin:0;">
-                <label>Session Auto-Timeout (Minutes)</label>
-                <input id="perf-sess-timeout" type="number" min="10" max="480" value="60" class="input-box mono">
+              <div class="grid-2" style="gap:10px;">
+                <div class="field" style="margin:0;">
+                  <label>Session Auto-Timeout (Min)</label>
+                  <input id="perf-sess-timeout" type="number" min="10" max="480" value="60" class="input-box mono">
+                </div>
+                <div class="field" style="margin:0;">
+                  <label>Max Merged Classes (2–10)</label>
+                  <input id="perf-max-merge" type="number" min="2" max="10" value="5" class="input-box mono">
+                </div>
               </div>
               <div style="padding:12px;border-radius:10px;background:var(--bg-3);border:1px solid var(--border);font-size:0.76rem;color:var(--text-dim);">
                 <strong style="color:var(--green);">Active Optimizations:</strong><br>
@@ -934,7 +934,10 @@
             </div>
 
             <div class="grid-3" style="margin-bottom:14px;align-items:end;">
-              <label style="font-size:0.82rem;font-weight:700;display:flex;align-items:center;gap:8px;"><input id="set-geo-enabled" type="checkbox"> Enable Campus GPS</label>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:10px;background:var(--bg-3);border:1px solid var(--border);">
+                <span style="font-size:0.8rem;font-weight:700;">Enable Campus GPS</span>
+                <label class="switch"><input id="set-geo-enabled" type="checkbox"><span class="slider"></span></label>
+              </div>
               <div class="field" style="margin:0;"><label>Campus Latitude</label><input id="set-geo-lat" class="input-box mono"></div>
               <div class="field" style="margin:0;"><label>Campus Longitude</label><input id="set-geo-lng" class="input-box mono"></div>
             </div>
@@ -1087,6 +1090,76 @@
   </div>
 </div>
 
-<script src="js/app.js?v=8.3"></script>
+<!-- Timetable Slot Popup Modal (Single by Default + Optional Merge Classes up to Limit) -->
+<div id="modal-tt-slot" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="tt-modal-title">Assign Lecture Slot</h3>
+      <button type="button" class="btn btn-ghost" onclick="closeModal('modal-tt-slot')">✕</button>
+    </div>
+    <input type="hidden" id="tt-edit-slot-id">
+    <div class="field">
+      <label>Primary Class</label>
+      <select id="tt-primary-class" class="input-box"></select>
+    </div>
+    <div class="grid-3">
+      <div class="field"><label>Day</label><select id="tt-day" class="input-box"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></div>
+      <div class="field"><label>Start Time</label><input id="tt-start" type="time" value="09:00" class="input-box"></div>
+      <div class="field"><label>End Time</label><input id="tt-end" type="time" value="10:00" class="input-box"></div>
+    </div>
+    <div class="grid-2">
+      <div class="field"><label>Subject</label><select id="tt-subject" class="input-box"></select></div>
+      <div class="field"><label>Faculty</label><select id="tt-faculty" class="input-box"></select></div>
+    </div>
+
+    <div style="padding:12px;border-radius:10px;background:var(--bg-3);border:1px solid var(--border);margin-bottom:14px;">
+      <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;font-weight:700;cursor:pointer;">
+        <input id="tt-merge-toggle" type="checkbox" onchange="toggleTtMergeArea()"> Merge Class (Combine multiple classes)
+      </label>
+      <div id="tt-merge-area" class="hidden" style="margin-top:10px;">
+        <div id="tt-merge-rows" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px;"></div>
+        <button type="button" id="btn-tt-add-merge" onclick="addTtMergeRow()" class="btn btn-ghost" style="width:100%;">+ Add Class</button>
+        <div id="tt-merge-limit-hint" style="font-size:0.7rem;color:var(--text-mute);margin-top:6px;"></div>
+      </div>
+    </div>
+
+    <button type="button" id="tt-save-btn" onclick="saveTimetableSlot()" class="btn btn-primary btn-full">Save Lecture Slot</button>
+  </div>
+</div>
+
+<!-- Admin Edit Attendance Modal -->
+<div id="modal-adm-edit-att" class="modal-overlay hidden">
+  <div class="modal-card" style="max-width:760px;">
+    <div class="modal-head">
+      <div>
+        <h3 id="adm-ea-title">Edit Session Attendance</h3>
+        <div id="adm-ea-sub" style="font-size:0.74rem;color:var(--text-mute);"></div>
+      </div>
+      <button type="button" class="btn btn-ghost" onclick="closeModal('modal-adm-edit-att')">✕</button>
+    </div>
+    <div class="toolbar" style="margin-bottom:10px;">
+      <input id="adm-ea-search" oninput="renderAdminEditAttTable()" placeholder="Filter roll, enrollment, or name..." class="input-box" style="flex:1;">
+    </div>
+    <div class="table-wrap" style="max-height:55vh;overflow-y:auto;">
+      <table>
+        <thead><tr><th>Roll / Enroll</th><th>Student Name</th><th>Class</th><th>Present (P)</th><th>OD</th><th>Status</th></tr></thead>
+        <tbody id="adm-ea-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Student 15-Second Attendance Marked Confirmation Popup -->
+<div id="modal-stu-att-ok" class="modal-overlay hidden">
+  <div class="modal-card" style="max-width:380px;text-align:center;">
+    <div style="width:64px;height:64px;margin:0 auto 14px;border-radius:50%;background:rgba(34,197,94,0.16);border:2px solid var(--green);display:flex;align-items:center;justify-content:center;font-size:1.8rem;color:var(--green);">✓</div>
+    <h3 style="color:var(--green);font-size:1.2rem;margin-bottom:6px;">Attendance Marked!</h3>
+    <p id="stu-att-ok-sub" style="font-size:0.82rem;color:var(--text-dim);margin-bottom:14px;">Your presence (P) has been recorded.</p>
+    <div style="font-size:0.76rem;color:var(--text-mute);margin-bottom:14px;">Closing automatically in <strong id="stu-att-ok-sec" class="mono" style="color:var(--accent);">15</strong>s</div>
+    <button type="button" onclick="closeStuAttOkModal()" class="btn btn-green btn-full">Done</button>
+  </div>
+</div>
+
+<script src="js/app.js?v=8.4"></script>
 </body>
 </html>
