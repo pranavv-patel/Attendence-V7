@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SmartQR Attendance v8.4</title>
+<title>SmartQR Attendance v8.5</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 <style>
@@ -610,7 +610,7 @@
 
         <div class="page" id="fac-tab-classes">
           <div class="panel-head"><h3>My Assigned & Merged Classes</h3><button type="button" onclick="loadFacultyClasses(true)" class="btn btn-ghost">↻ Refresh</button></div>
-          <div id="fac-classes-grid" class="grid-3"></div>
+          <div id="fac-classes-grid" style="display:flex;flex-direction:column;gap:18px;"></div>
         </div>
 
         <div class="page" id="fac-tab-matrix">
@@ -649,7 +649,7 @@
         <div class="sidebar-logo"><img src="assets/logo.png" onerror="this.style.display='none';this.parentElement.textContent='QR';" alt="QR"></div>
         <div>
           <h2>QR <span>Attend</span></h2>
-          <small>Admin Console v8.4</small>
+          <small>Admin Console v8.5</small>
         </div>
       </div>
 
@@ -1160,6 +1160,6 @@
   </div>
 </div>
 
-<script src="js/app.js?v=8.4"></script>
+<script src="js/app.js?v=8.5"></script>
 </body>
 </html>

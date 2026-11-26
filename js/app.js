@@ -253,9 +253,29 @@ async function toggleStudentCamera() {
 async function submitStudentQr(rawText) {
   let payload;
   try { payload = JSON.parse(rawText); } catch { return toast('Invalid QR code.', true); }
-  const send = async (lat = null, lng = null) => {
+
+  const requestGpsAndSend = () => {
+    if (!navigator.geolocation) {
+      document.getElementById('stu-scan-status').textContent = 'GPS not supported on this browser.';
+      return toast('Location permission is required for this lecture.', true);
+    }
+    document.getElementById('stu-scan-status').textContent = 'Requesting location permission...';
+    navigator.geolocation.getCurrentPosition(
+      p => send(p.coords.latitude, p.coords.longitude, true),
+      () => {
+        document.getElementById('stu-scan-status').textContent = 'Location permission denied. Enable GPS and scan again.';
+        toast('Location permission is required for this lecture.', true);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
+
+  const send = async (lat = null, lng = null, triedGps = false) => {
     const res = await api('submit_qr', { session_id: payload.s || payload.sid, nonce: payload.n, device_fp: getDeviceFp(), lat, lng });
     if (!res.ok) {
+      if (res.error === 'GPS_REQUIRED' && !triedGps) {
+        return requestGpsAndSend();
+      }
       if (res.error === 'DEVICE_MISMATCH') {
         document.getElementById('stu-scan-status').textContent = 'Device mismatch — submit a change request.';
         document.getElementById('stu-mismatch-text').textContent = res.message || 'Unrecognized device. Submit a Device Change Request.';
@@ -270,22 +290,11 @@ async function submitStudentQr(rawText) {
     document.getElementById('stu-scan-status').textContent = 'Ready to scan';
     showStuAttOkPopup();
   };
+
   if (SETTINGS.geofence_enabled) {
-    if (!navigator.geolocation) {
-      document.getElementById('stu-scan-status').textContent = 'GPS not supported on this browser.';
-      return toast('Location is required by Admin GPS Geofencing.', true);
-    }
-    document.getElementById('stu-scan-status').textContent = 'Requesting location permission...';
-    navigator.geolocation.getCurrentPosition(
-      p => send(p.coords.latitude, p.coords.longitude),
-      () => {
-        document.getElementById('stu-scan-status').textContent = 'Location permission denied. Allow GPS and scan again.';
-        send(null, null);
-      },
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
-    );
+    requestGpsAndSend();
   } else {
-    await send(null, null);
+    await send(null, null, false);
   }
 }
 
@@ -515,17 +524,31 @@ async function loadFacultyClasses(force = false) {
   LOADED_TABS.facClasses = true;
   FAC_STATE.slots = res.slots || [];
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  document.getElementById('fac-classes-grid').innerHTML = FAC_STATE.slots.length ? FAC_STATE.slots.map(sl => `
+  const todaySlots = FAC_STATE.slots.filter(s => s.schedule_group === 'TODAY');
+  const yestSlots = FAC_STATE.slots.filter(s => s.schedule_group === 'YESTERDAY');
+
+  const renderCards = list => list.map(sl => `
     <div class="panel" style="margin-bottom:0;">
-      <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-        <span class="mono" style="font-size:0.74rem;color:var(--accent);">${days[sl.day_of_week]} · ${sl.start_time}–${sl.end_time}</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <span class="mono" style="font-size:0.74rem;color:var(--accent);">${sl.schedule_date} (${days[sl.day_of_week]}) · ${sl.start_time}–${sl.end_time}</span>
         ${(sl.class_ids || []).length > 1 ? '<span class="pill purple">MERGED</span>' : `<span class="pill blue">v${sl.version_no || 1}</span>`}
       </div>
       <div style="font-weight:700;margin-bottom:4px;">${sl.subject_name} (${sl.subject_code})</div>
       <div style="font-size:0.76rem;color:var(--text-dim);margin-bottom:12px;">${(sl.class_names || []).join(' + ')}</div>
-      <button type="button" onclick="startSessionFromSlotById('${sl.id}')"  class="btn btn-primary btn-full">Start Lecture QR</button>
+      <button type="button" onclick="startSessionFromSlotById('${sl.id}')" class="btn btn-primary btn-full">${sl.schedule_group === 'TODAY' ? 'Start / Update QR' : 'Open / Update Attendance'}</button>
     </div>
-  `).join('') : '<p style="color:var(--text-mute);">No timetable slots assigned yet.</p>';
+  `).join('');
+
+  document.getElementById('fac-classes-grid').innerHTML = `
+    <div>
+      <div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;color:var(--green);margin-bottom:10px;">Today · ${res.today_date || ''} (${todaySlots.length})</div>
+      <div class="grid-3">${todaySlots.length ? renderCards(todaySlots) : '<p style="color:var(--text-mute);font-size:0.82rem;">No lectures scheduled for today.</p>'}</div>
+    </div>
+    <div>
+      <div style="font-size:0.78rem;font-weight:800;text-transform:uppercase;color:var(--amber);margin-bottom:10px;">Yesterday · ${res.yesterday_date || ''} (${yestSlots.length})</div>
+      <div class="grid-3">${yestSlots.length ? renderCards(yestSlots) : '<p style="color:var(--text-mute);font-size:0.82rem;">No lectures scheduled for yesterday.</p>'}</div>
+    </div>
+  `;
 }
 
 async function loadFacultyDeviceRequests() {
@@ -558,7 +581,7 @@ async function startSessionFromSlotById(slotId) {
   switchFacultyTab('live');
   const res = await api('start_session', {
     class_id: sl.class_id, class_ids: sl.class_ids || [sl.class_id], subject_id: sl.subject_id,
-    slot_id: sl.id, slot_start_time: sl.start_time, slot_end_time: sl.end_time, session_type: 'REGULAR'
+    slot_id: sl.id, slot_start_time: sl.start_time, slot_end_time: sl.end_time, session_date: sl.schedule_date, session_type: 'REGULAR'
   });
   if (!res.ok) return toast(res.error, true);
   toast(res.resumed ? 'Resumed existing lecture — Update Attendance mode!' : 'Lecture QR started!');

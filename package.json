@@ -1,7 +1,7 @@
 {
   "name": "smartqr-attendance-v8",
-  "version": "8.4.0",
-  "description": "SmartQR Attendance v8.4 - Popup Timetable Builder, Dynamic Merge Limit, Device Bound Column, Dual GPS Switch, Admin Attendance Editor & 15s Student Confirmation Popup",
+  "version": "8.5.0",
+  "description": "SmartQR Attendance v8.5 - Faculty Today & Yesterday Deduplicated Schedule, Strict Dual-GPS Permission Enforcement",
   "private": true,
   "dependencies": {
     "nodemailer": "^6.9.15"

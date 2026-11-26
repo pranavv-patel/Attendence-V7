@@ -492,7 +492,7 @@ module.exports = async (req, res) => {
           session = updated[0] || session;
         }
       } else {
-        const sCode = await nextSessionCode(ist.dateStr);
+        const sCode = await nextSessionCode(targetDate);
         const nonce = crypto.randomBytes(6).toString('hex');
         const created = await sbFetch('attendance_sessions', {
           method: 'POST',
@@ -506,7 +506,7 @@ module.exports = async (req, res) => {
             slot_start_time: slot.start_time,
             slot_end_time: slot.end_time,
             timetable_version: slot.version_no || 1,
-            session_date: ist.dateStr,
+            session_date: targetDate,
             current_nonce: nonce,
             is_active: true,
             session_type: 'CR_OPEN'
@@ -583,13 +583,22 @@ module.exports = async (req, res) => {
       return res.json({ ok: true, manual_headcount: headcount });
     }
 
-    // Faculty lazy load: My Classes
+    // Faculty lazy load: My Classes (ONLY Today on top & Yesterday at bottom, deduplicated with dates)
     if (action === 'faculty_classes') {
       const sess = requireRole(req, res, ['faculty', 'admin']);
       if (!sess) return;
 
+      const istNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const todayDow = istNow.getDay();
+      const fmtDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const todayStr = fmtDate(istNow);
+
+      const yestDate = new Date(istNow.getTime() - 24 * 3600 * 1000);
+      const yestDow = yestDate.getDay();
+      const yestStr = fmtDate(yestDate);
+
       const [slots, classes, subjects] = await Promise.all([
-        sbFetch(`timetable_slots?faculty_id=eq.${sess.id}&is_current=eq.true&order=day_of_week.asc,start_time.asc&select=*`),
+        sbFetch(`timetable_slots?faculty_id=eq.${sess.id}&is_current=eq.true&day_of_week=in.(${todayDow},${yestDow})&order=start_time.asc&select=*`),
         sbFetch('classes?order=name.asc&select=id,name,code,semester'),
         sbFetch('subjects?order=name.asc&select=id,name,code')
       ]);
@@ -597,19 +606,41 @@ module.exports = async (req, res) => {
       const clsMap = Object.fromEntries((classes || []).map(c => [c.id, c]));
       const subMap = Object.fromEntries((subjects || []).map(s => [s.id, s]));
 
-      const enriched = (slots || []).map(sl => {
+      const seen = new Set();
+      const enriched = [];
+      for (const sl of slots || []) {
         const cIds = normalizeClassIds(sl.class_id, sl.class_ids);
-        return {
+        const dedupKey = `${sl.day_of_week}|${sl.start_time}|${sl.end_time}|${sl.subject_id}|${[...cIds].sort().join(',')}`;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
+
+        const isToday = Number(sl.day_of_week) === todayDow;
+        enriched.push({
           ...sl,
           class_ids: cIds,
           class_names: cIds.map(id => clsMap[id]?.name || 'Class'),
           class_codes: cIds.map(id => clsMap[id]?.code || ''),
           subject_name: subMap[sl.subject_id]?.name || 'Subject',
-          subject_code: subMap[sl.subject_id]?.code || ''
-        };
+          subject_code: subMap[sl.subject_id]?.code || '',
+          schedule_group: isToday ? 'TODAY' : 'YESTERDAY',
+          schedule_date: isToday ? todayStr : yestStr
+        });
+      }
+
+      // Sort: TODAY on top (by start_time), YESTERDAY at bottom (by start_time)
+      enriched.sort((a, b) => {
+        if (a.schedule_group !== b.schedule_group) return a.schedule_group === 'TODAY' ? -1 : 1;
+        return String(a.start_time || '').localeCompare(String(b.start_time || ''));
       });
 
-      return res.json({ ok: true, slots: enriched, classes: classes || [], subjects: subjects || [] });
+      return res.json({
+        ok: true,
+        today_date: todayStr,
+        yesterday_date: yestStr,
+        slots: enriched,
+        classes: classes || [],
+        subjects: subjects || []
+      });
     }
 
     // Faculty lazy load: Attendance Matrix / History
@@ -692,8 +723,9 @@ module.exports = async (req, res) => {
       });
 
       const ist = getISTClock();
+      const targetDate = cleanNullableText(body.session_date) || ist.dateStr;
       const slotId = cleanNullableText(body.slot_id);
-      const todayRows = await sbFetch(`attendance_sessions?session_date=eq.${ist.dateStr}&subject_id=eq.${subjectId}&order=created_at.desc&select=*`);
+      const todayRows = await sbFetch(`attendance_sessions?session_date=eq.${targetDate}&subject_id=eq.${subjectId}&order=created_at.desc&select=*`);
       const sortedTarget = [...mergedIds].sort().join(',');
       const existing = (todayRows || []).find(s => {
         if (slotId && s.slot_id && s.slot_id === slotId) return true;
@@ -712,7 +744,7 @@ module.exports = async (req, res) => {
         return res.json({ ok: true, session: resumedSess, resumed: true });
       }
 
-      const sCode = await nextSessionCode(ist.dateStr);
+      const sCode = await nextSessionCode(targetDate);
       const nonce = crypto.randomBytes(6).toString('hex');
       const created = await sbFetch('attendance_sessions', {
         method: 'POST',
@@ -1503,7 +1535,7 @@ module.exports = async (req, res) => {
         return res.status(400).json({ ok: false, error: 'Select Class, Subject, and Substitute Faculty.' });
       }
       const ist = getISTClock();
-      const sCode = await nextSessionCode(ist.dateStr);
+      const sCode = await nextSessionCode(targetDate);
       const nonce = crypto.randomBytes(6).toString('hex');
       const created = await sbFetch('attendance_sessions', {
         method: 'POST',

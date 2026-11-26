@@ -530,9 +530,12 @@ BEGIN
 
   v_geo_active := COALESCE(v_set.geofence_enabled, FALSE) AND COALESCE(v_sess.geofence_override, FALSE);
 
-  IF v_geo_active AND v_target_lat IS NOT NULL AND v_target_lng IS NOT NULL THEN
+  IF v_geo_active THEN
+    IF v_target_lat IS NULL OR v_target_lng IS NULL THEN
+      RETURN jsonb_build_object('ok', FALSE, 'error', 'GPS is ON, but Campus Latitude/Longitude is not set in Admin Settings.');
+    END IF;
     IF p_lat IS NULL OR p_lng IS NULL THEN
-      RETURN jsonb_build_object('ok', FALSE, 'error', 'Location permission is required for this lecture.');
+      RETURN jsonb_build_object('ok', FALSE, 'error', 'GPS_REQUIRED', 'message', 'Location permission is required for this lecture.');
     END IF;
     v_dist := calc_distance_meters(p_lat, p_lng, v_target_lat, v_target_lng);
     IF v_dist > v_target_rad THEN
